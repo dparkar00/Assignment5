@@ -1,0 +1,45 @@
+# Primary model: Swin Transformer
+# Parameter count with these settings: 12,176,830 trainable params
+# (see src/models.py SwinConfig / VisionTransformer __main__ block)
+
+model:
+  name: swin
+  input_resolution: 32
+  patch_size: 4
+  in_channels: 3
+  window_size: 4
+  embed_dim: 96
+  num_stages: 3
+  depths: [2, 2, 6]
+  num_heads: [3, 6, 12]
+  mlp_ratio: 4.0
+  dropout: 0.0
+  drop_path_rate: 0.1
+  num_classes: 100
+
+# Experimental controls shared with configs/vit_baseline.yaml -- both files
+# must agree on everything below so the two runs are a fair comparison
+# (Part 2, "Experimental Controls").
+data:
+  data_root: ./data
+  random_seed: 705643
+  randaugment_num_ops: 2
+  randaugment_magnitude: 9
+  random_crop_padding: 4
+
+training:
+  batch_size: 128
+  random_seed: 705643
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.05
+  lr_schedule: cosine
+  warmup_epochs: 5
+  label_smoothing: 0.1
+  grad_clip_norm: 1.0
+  mixed_precision: true
+  checkpoint_dir: ./checkpoints/primary
+  log_path: ./logs/primary_training.csv
+  wandb_project: cifar100-vit-swin
+  wandb_run_name: swin-primary

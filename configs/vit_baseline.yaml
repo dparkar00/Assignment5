@@ -1,0 +1,44 @@
+# Plain ViT baseline
+# Parameter count with these settings: 12,052,036 trainable params
+# Difference from primary (Swin) model: 1.02% (required: <= 10%)
+# Found via grid search over embed_dim/depth/num_heads -- see the
+# parameter-matching search in the Part 2 conversation history, or rerun:
+#   python -c "from src.models import *; ..." to reproduce the search.
+
+model:
+  name: vit
+  input_resolution: 32
+  patch_size: 4
+  in_channels: 3
+  embed_dim: 288
+  depth: 12
+  num_heads: 6
+  mlp_ratio: 4.0
+  dropout: 0.0
+  drop_path_rate: 0.0
+  num_classes: 100
+
+# Must match configs/primary.yaml exactly (Part 2, "Experimental Controls").
+data:
+  data_root: ./data
+  random_seed: 705643
+  randaugment_num_ops: 2
+  randaugment_magnitude: 9
+  random_crop_padding: 4
+
+training:
+  batch_size: 128
+  random_seed: 705643
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.05
+  lr_schedule: cosine
+  warmup_epochs: 5
+  label_smoothing: 0.1
+  grad_clip_norm: 1.0
+  mixed_precision: true
+  checkpoint_dir: ./checkpoints/vit_baseline
+  log_path: ./logs/vit_training.csv
+  wandb_project: cifar100-vit-swin
+  wandb_run_name: vit-baseline
