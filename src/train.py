@@ -248,10 +248,29 @@ def log_epoch_to_csv(log_path: Path, row: list) -> None:
         csv.writer(csv_file).writerow(row)
 
 
-def train(config_path: str, dry_run: bool = False, epochs_override: int | None = None) -> None:
-    """Full training entry point, driven entirely by a YAML config file."""
+def train(
+    config_path: str,
+    dry_run: bool = False,
+    epochs_override: int | None = None,
+    data_root_override: str | None = None,
+    checkpoint_dir_override: str | None = None,
+) -> None:
+    """Full training entry point, driven entirely by a YAML config file.
+
+    data_root_override / checkpoint_dir_override let a caller (e.g. the
+    Colab notebook, redirecting to Google Drive) point at different paths
+    without editing the YAML file itself -- editing the tracked config file
+    in place is what causes every subsequent `git pull` to conflict with
+    "local changes." These overrides only affect this run's in-memory
+    config, never the file on disk.
+    """
     config = load_yaml_config(config_path)
     model_cfg, data_cfg, train_cfg = config["model"], config["data"], config["training"]
+
+    if data_root_override is not None:
+        data_cfg = {**data_cfg, "data_root": data_root_override}
+    if checkpoint_dir_override is not None:
+        train_cfg = {**train_cfg, "checkpoint_dir": checkpoint_dir_override}
 
     set_seed(train_cfg["random_seed"])
     device = get_device()
@@ -375,8 +394,23 @@ def main() -> None:
         "--epochs", type=int, default=None,
         help="Override the config's epoch count (useful with --dry-run)."
     )
+    parser.add_argument(
+        "--data-root", type=str, default=None,
+        help="Override the config's data.data_root (e.g. a Google Drive path on Colab), "
+        "without editing the YAML file itself.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None,
+        help="Override the config's training.checkpoint_dir, without editing the YAML file itself.",
+    )
     args = parser.parse_args()
-    train(args.config, dry_run=args.dry_run, epochs_override=args.epochs)
+    train(
+        args.config,
+        dry_run=args.dry_run,
+        epochs_override=args.epochs,
+        data_root_override=args.data_root,
+        checkpoint_dir_override=args.checkpoint_dir,
+    )
 
 
 if __name__ == "__main__":
