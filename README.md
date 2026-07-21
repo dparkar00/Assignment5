@@ -36,13 +36,21 @@ python -m pytest tests/ -v
 
 ### 2. Colab bootstrap cell
 
-Paste this as the first cell of any Colab notebook working on this project:
+Paste this as the first cell of any Colab notebook working on this project
+(or just upload `colab_train.ipynb`, which already does this):
 
 ```python
 !git clone https://github.com/<your-username>/<your-repo>.git
 %cd vision_transformer
 !pip install -r requirements.txt -q
 ```
+
+`requirements.txt` intentionally has no version pins, so on Colab this
+leaves the runtime's preinstalled, GPU-matched `torch`/`torchvision`/`numpy`
+alone rather than forcing a version that conflicts with other preinstalled
+packages (rasterio, jax, opencv, etc. all require numpy>=2) or silently
+replaces Colab's CUDA-matched torch build with a mismatched one. It only
+installs what's actually missing.
 
 If the repo is private, use a GitHub personal access token in the clone URL
 (`https://<token>@github.com/...`) or use Colab's GitHub auth integration

@@ -1,6 +1,8 @@
 # Primary model: Swin Transformer
 # Parameter count with these settings: 12,176,830 trainable params
 # (see src/models.py SwinConfig / VisionTransformer __main__ block)
+# Trained from random initialization -- no pretrained weights are loaded
+# anywhere in src/models.py or src/train.py (Part 2 requirement).
 
 model:
   name: swin
@@ -28,7 +30,8 @@ data:
   random_crop_padding: 4
 
 training:
-  batch_size: 128
+  batch_size: 256
+  num_workers: 2
   random_seed: 705643
   epochs: 100
   optimizer: adamw

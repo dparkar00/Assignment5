@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import time
 from pathlib import Path
 
@@ -196,6 +197,7 @@ def print_run_settings(model_cfg: dict, train_cfg: dict, device: torch.device, e
         f"Grad clip norm: {train_cfg['grad_clip_norm']}  "
         f"Mixed precision: {train_cfg['mixed_precision'] and device.type == 'cuda'}"
     )
+    print("Pretrained weights: False (model built with random initialization)")
 
 
 def build_loaders_from_config(
@@ -219,7 +221,9 @@ def build_loaders_from_config(
     )
     datasets_bundle = build_datasets(data_config)
     train_loader, val_loader, _test_loader = build_dataloaders(
-        datasets_bundle, batch_size=train_cfg["batch_size"]
+        datasets_bundle,
+        batch_size=train_cfg["batch_size"],
+        num_workers=train_cfg.get("num_workers", 4),
     )
     return train_loader, val_loader
 
@@ -281,7 +285,10 @@ def train(config_path: str, dry_run: bool = False, epochs_override: int | None =
         project=train_cfg["wandb_project"],
         name=train_cfg["wandb_run_name"],
         mode="disabled" if dry_run else "online",
-        config={**model_cfg, **train_cfg, "num_parameters": num_params, "device": str(device)},
+        config={
+            **model_cfg, **train_cfg,
+            "num_parameters": num_params, "device": str(device), "pretrained": False,
+        },
     )
 
     csv_fields = [
@@ -338,6 +345,17 @@ def train(config_path: str, dry_run: bool = False, epochs_override: int | None =
 
     print(f"Best validation accuracy: {best_val_accuracy:.4f}")
     wandb.finish()
+
+    # Explicit cleanup: this function is called twice in a row in the same
+    # Python process when training both models from one Colab cell, so
+    # anything left referencing GPU/CPU memory (model, optimizer, dataloader
+    # workers) should be released rather than accumulating across both runs.
+    del model, optimizer, scheduler, train_loader, val_loader
+    if scaler is not None:
+        del scaler
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
 
 def main() -> None:

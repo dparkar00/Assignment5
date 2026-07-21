@@ -4,6 +4,8 @@
 # Found via grid search over embed_dim/depth/num_heads -- see the
 # parameter-matching search in the Part 2 conversation history, or rerun:
 #   python -c "from src.models import *; ..." to reproduce the search.
+# Trained from random initialization -- no pretrained weights are loaded
+# anywhere in src/models.py or src/train.py (Part 2 requirement).
 
 model:
   name: vit
@@ -27,7 +29,8 @@ data:
   random_crop_padding: 4
 
 training:
-  batch_size: 128
+  batch_size: 256
+  num_workers: 2
   random_seed: 705643
   epochs: 100
   optimizer: adamw

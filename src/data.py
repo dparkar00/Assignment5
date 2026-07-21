@@ -325,7 +325,16 @@ def build_dataloaders(
     batch_size: int = 128,
     num_workers: int = 4,
 ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
-    """Wrap the three datasets in DataLoaders with sensible defaults."""
+    """Wrap the three datasets in DataLoaders with sensible defaults.
+
+    persistent_workers=True (when num_workers > 0) keeps worker processes
+    alive between epochs instead of respawning them every epoch, which
+    matters a lot here: 100 epochs means 100 worker-startup costs saved.
+    prefetch_factor lets each worker stage several batches ahead so the GPU
+    is less likely to sit idle waiting on CPU-side augmentation (RandAugment
+    is not cheap per-image).
+    """
+    persistent = num_workers > 0
     train_loader = torch.utils.data.DataLoader(
         datasets_bundle.train,
         batch_size=batch_size,
@@ -333,6 +342,8 @@ def build_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=persistent,
+        prefetch_factor=4 if persistent else None,
     )
     val_loader = torch.utils.data.DataLoader(
         datasets_bundle.val,
@@ -340,6 +351,7 @@ def build_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=persistent,
     )
     test_loader = torch.utils.data.DataLoader(
         datasets_bundle.test,
@@ -347,6 +359,7 @@ def build_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        persistent_workers=persistent,
     )
     return train_loader, val_loader, test_loader
 
