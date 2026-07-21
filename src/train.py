@@ -219,6 +219,10 @@ def build_loaders_from_config(
         randaugment_magnitude=data_cfg["randaugment_magnitude"],
         random_crop_padding=data_cfg["random_crop_padding"],
     )
+    print(
+        "Loading CIFAR-100 (downloads ~170MB on first run only; cached after "
+        "that) ..."
+    )
     datasets_bundle = build_datasets(data_config)
     train_loader, val_loader, _test_loader = build_dataloaders(
         datasets_bundle,

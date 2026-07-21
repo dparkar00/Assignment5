@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import time
 from pathlib import Path
 
 import numpy as np
@@ -271,21 +272,35 @@ class Cifar100Datasets:
     val_indices: np.ndarray
 
 
-def build_datasets(config: DataConfig) -> Cifar100Datasets:
+def build_datasets(config: DataConfig, verbose: bool = True) -> Cifar100Datasets:
     """Download (if needed) CIFAR-100 and construct train/val/test datasets.
 
     Train and val are stratified subsets of the official 50,000-image
     training set (45,000 / 5,000). Test is the unmodified official
     10,000-image test set.
+
+    verbose=True prints a short status line before/after each phase
+    (download, split, disjointness check). The actual compute here is fast
+    (~1-2 seconds at full CIFAR-100 scale, benchmarked separately from the
+    network download) -- these prints exist so a slow *download* doesn't
+    look like a hang with zero feedback for minutes at a time.
     """
     Path(config.data_root).mkdir(parents=True, exist_ok=True)
 
+    if verbose:
+        print(f"[data] Checking/downloading CIFAR-100 into {config.data_root} ...")
+    download_start = time.time()
     # Load raw (transform=None) so we can attach split-specific transforms.
     raw_train_full = datasets.CIFAR100(
         root=config.data_root, train=True, download=True, transform=None
     )
     raw_test = datasets.CIFAR100(root=config.data_root, train=False, download=True, transform=None)
+    if verbose:
+        print(f"[data] Dataset ready in {time.time() - download_start:.1f}s.")
 
+    if verbose:
+        print("[data] Building stratified 45,000/5,000 train/val split ...")
+    split_start = time.time()
     train_indices, val_indices = stratified_train_val_indices(
         targets=raw_train_full.targets,
         val_size=VAL_SPLIT_SIZE,
@@ -293,7 +308,12 @@ def build_datasets(config: DataConfig) -> Cifar100Datasets:
         seed=config.random_seed,
     )
     verify_disjoint_splits(train_indices, val_indices, test_size=len(raw_test))
+    if verbose:
+        print(f"[data] Split built and verified in {time.time() - split_start:.1f}s.")
 
+    if verbose:
+        print("[data] Verifying content-level disjointness across all three splits ...")
+    verify_start = time.time()
     # Content-level check across all three splits, including test (which
     # can't be checked by index since it comes from a separate file).
     verify_disjoint_by_content(
@@ -301,6 +321,8 @@ def build_datasets(config: DataConfig) -> Cifar100Datasets:
         val_images=raw_train_full.data[val_indices],
         test_images=raw_test.data,
     )
+    if verbose:
+        print(f"[data] Disjointness verified in {time.time() - verify_start:.1f}s.")
 
     train_transform = build_train_transform(config)
     eval_transform = build_eval_transform(config)
@@ -310,6 +332,9 @@ def build_datasets(config: DataConfig) -> Cifar100Datasets:
 
     raw_test.transform = eval_transform
     test_dataset = raw_test
+
+    if verbose:
+        print("[data] Dataset pipeline ready.")
 
     return Cifar100Datasets(
         train=train_dataset,
