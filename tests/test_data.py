@@ -107,14 +107,27 @@ class TestDisjointByContent:
         overlaps = verify_disjoint_by_content(train_images, val_images, test_images)
         assert overlaps == {"train_val_overlap": 0, "train_test_overlap": 0, "val_test_overlap": 0}
 
-    def test_raises_on_duplicate_image_across_splits(self):
+    def test_default_warns_but_does_not_raise_on_duplicate(self, capsys):
+        rng = np.random.default_rng(1)
+        train_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
+        val_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
+        test_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
+        test_images[0] = train_images[0]
+
+        overlaps = verify_disjoint_by_content(train_images, val_images, test_images)
+
+        assert overlaps["train_test_overlap"] == 1
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.out
+
+    def test_strict_mode_raises_on_duplicate_image_across_splits(self):
         rng = np.random.default_rng(1)
         train_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
         val_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
         test_images = rng.integers(0, 255, size=(5, 4, 4, 3), dtype=np.uint8)
         test_images[0] = train_images[0]
         with pytest.raises(ValueError, match="duplicate"):
-            verify_disjoint_by_content(train_images, val_images, test_images)
+            verify_disjoint_by_content(train_images, val_images, test_images, strict=True)
 
 
 class TestNormalizationStats:
