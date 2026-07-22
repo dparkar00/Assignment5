@@ -1,7 +1,11 @@
 # Primary model: Swin Transformer
-# Parameter count with these settings: 13,154,590 trainable params
-# (9.15% above the ViT baseline's 12,052,036 -- within the required 10%)
-# Trained from random initialization -- no pretrained weights are loaded
+# Parameter count with these settings: 13,284,499 trainable params
+# 9.28% relative to primary (correct denominator per the assignment's
+# wording, "within 10% of your primary model's parameter count" -- i.e.
+# |ViT - Primary| / Primary <= 0.10, not divided by ViT). Solving for
+# Primary given ViT is fixed at 12,052,036 gives a valid range of
+# [10,956,396, 13,391,151]; 13,284,499 sits inside it.
+# Trained from random initialization; no pretrained weights are loaded
 # anywhere in src/models.py or src/train.py (Part 2 requirement).
 #
 # Revision history:
@@ -12,23 +16,29 @@
 #      while baseline (identical training procedure, dropout/drop_path
 #      0.1/0.1) reached 66.32%.
 #   v3 (150 ep, dropout=0.05, drop_path=0.1, mlp_ratio=4.5, patch_size=4):
-#      best val 61.36% -- a 0.02% change from v2. Reducing regularization
-#      and adding MLP capacity had essentially NO effect, which rules out
-#      "over-regularized" as the actual bottleneck.
-#   v4 (this version): diagnosed the real issue -- at patch_size=4 on a
-#      32x32 image, the token grid is only 8x8. With window_size=4 that's
-#      just 4 windows at stage 1, and by stage 3 (2x2) window_size
-#      auto-clamps to the full resolution, meaning ONE window: no windowing
-#      benefit left at all in the deepest stage. Swin's whole locality/
-#      hierarchy mechanism was barely operating. Changed patch_size 4 -> 2:
-#      16x16 initial grid, real multi-window attention at every stage
-#      (16 windows at stage 1, 4 at stage 2, 1 at stage 3 same as before
-#      but now with 16 tokens in it instead of 4). Parameter cost is
-#      negligible (13,154,590 vs 13,155,166 -- patch embedding is a tiny
-#      fraction of total params either way), but compute cost is real:
-#      benchmarked ~2.85x slower per training step on CPU; expect a real,
-#      if likely smaller, slowdown on GPU too -- budget more time per epoch
-#      than the ~19s/epoch from previous runs.
+#      best val 61.36% -- a 0.02% change from v2. Ruled out
+#      "over-regularized" as the bottleneck.
+#   v4 (patch_size=4 -> 2, depths=(2,2,6)): at patch_size=4 the token grid
+#      was only 8x8, giving Swin's windowing almost nothing to do (4
+#      windows at stage 1, ONE window -- i.e. no windowing at all -- by
+#      stage 3). patch_size=2 gives a real 16x16 grid with meaningful
+#      multi-window attention at every stage. Best val jumped to 66.84%
+#      (test accuracy 65.58%, vs. baseline's 66.48% test -- close, some
+#      normal val/test variance expected given the 5,000-image val set).
+#      Epoch time barely changed (~18.5-19s, same as before) -- the GPU
+#      absorbed the extra token count well.
+#   v5 (this version): still 3.2 points short of 70%, and the parameter
+#      budget looked exhausted at v4 (13,154,590 vs a 13,391,151 ceiling --
+#      only ~237K headroom). But stage 3 runs at 4x the base embedding dim
+#      (384 channels), so its blocks are far more expensive than stage 1/2
+#      blocks (96/192 channels) -- redistributing depth from stage 3 to
+#      stages 1-2 buys much more total depth per parameter spent. Searched
+#      depth combinations directly in code (not by hand) and found
+#      depths=(7,5,5) is the deepest combination that still fits the
+#      budget: 17 total blocks vs 10 before (+70% deeper), at 13,284,499
+#      params (9.28%, inside the ceiling). Whether more depth actually
+#      helps accuracy (vs. just being parameter-budget-feasible) is an
+#      empirical question this run will answer.
 #
 # Only architecture-specific settings (model: section) differ from
 # configs/vit_baseline.yaml -- everything in data:/training: below is
@@ -42,7 +52,7 @@ model:
   window_size: 4
   embed_dim: 96
   num_stages: 3
-  depths: [2, 2, 6]
+  depths: [7, 5, 5]
   num_heads: [3, 6, 12]
   mlp_ratio: 4.5
   dropout: 0.05
