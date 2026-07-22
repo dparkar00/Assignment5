@@ -1,37 +1,43 @@
 # Primary model: Swin Transformer
-# Parameter count with these settings: 13,155,166 trainable params
+# Parameter count with these settings: 13,154,590 trainable params
 # (9.15% above the ViT baseline's 12,052,036 -- within the required 10%)
 # Trained from random initialization -- no pretrained weights are loaded
 # anywhere in src/models.py or src/train.py (Part 2 requirement).
 #
 # Revision history:
-#   v1 (100 epochs, no mixup): 94% train acc vs 59% val acc -- clear
-#      overfitting. Added MixUp/CutMix, stronger RandAugment, weight decay,
-#      stochastic depth, extended to 150 epochs (all shared with baseline).
-#   v2 (150 epochs, dropout=0.1, drop_path=0.2): best val 61.3%, while the
-#      *baseline* -- same augmentation/optimizer/schedule/duration, but
-#      dropout=0.1/drop_path=0.1 -- reached 66.3% best val. Since every
-#      shared (training-procedure) setting was identical between the two
-#      runs, the gap points at Swin's regularization being stronger than
-#      the baseline's despite Swin doing worse: not clearly overfitting
-#      anymore (train_loss 1.90 vs val_loss 2.10, a modest gap), which
-#      suggests dropout=0.1/drop_path=0.2 was limiting Swin's own fit more
-#      than it needed to.
-#   v3 (this version): drop_path_rate 0.2 -> 0.1 (now matches baseline,
-#      removing that confound) and dropout 0.1 -> 0.05. Also mlp_ratio
-#      4.0 -> 4.5 for a modest capacity increase -- this is the most
-#      capacity that fits inside the required 10% parameter-match ceiling;
-#      note that even one extra block in the deepest stage (depths (2,2,7))
-#      alone overshoots to +15.76%, since that stage runs at 4x the base
-#      embedding dimension. Only architecture-specific settings changed
-#      here (dropout/drop_path_rate/mlp_ratio) -- everything in data:/
-#      training: below is byte-identical to configs/vit_baseline.yaml,
-#      unchanged, per "Experimental Controls".
+#   v1 (100 epochs, no mixup): 94% train acc vs 59% val acc -- overfitting.
+#      Added MixUp/CutMix, stronger RandAugment, weight decay, stochastic
+#      depth, extended to 150 epochs (all shared with baseline).
+#   v2 (150 ep, dropout=0.1, drop_path=0.2, patch_size=4): best val 61.34%,
+#      while baseline (identical training procedure, dropout/drop_path
+#      0.1/0.1) reached 66.32%.
+#   v3 (150 ep, dropout=0.05, drop_path=0.1, mlp_ratio=4.5, patch_size=4):
+#      best val 61.36% -- a 0.02% change from v2. Reducing regularization
+#      and adding MLP capacity had essentially NO effect, which rules out
+#      "over-regularized" as the actual bottleneck.
+#   v4 (this version): diagnosed the real issue -- at patch_size=4 on a
+#      32x32 image, the token grid is only 8x8. With window_size=4 that's
+#      just 4 windows at stage 1, and by stage 3 (2x2) window_size
+#      auto-clamps to the full resolution, meaning ONE window: no windowing
+#      benefit left at all in the deepest stage. Swin's whole locality/
+#      hierarchy mechanism was barely operating. Changed patch_size 4 -> 2:
+#      16x16 initial grid, real multi-window attention at every stage
+#      (16 windows at stage 1, 4 at stage 2, 1 at stage 3 same as before
+#      but now with 16 tokens in it instead of 4). Parameter cost is
+#      negligible (13,154,590 vs 13,155,166 -- patch embedding is a tiny
+#      fraction of total params either way), but compute cost is real:
+#      benchmarked ~2.85x slower per training step on CPU; expect a real,
+#      if likely smaller, slowdown on GPU too -- budget more time per epoch
+#      than the ~19s/epoch from previous runs.
+#
+# Only architecture-specific settings (model: section) differ from
+# configs/vit_baseline.yaml -- everything in data:/training: below is
+# byte-identical, unchanged, per "Experimental Controls".
 
 model:
   name: swin
   input_resolution: 32
-  patch_size: 4
+  patch_size: 2
   in_channels: 3
   window_size: 4
   embed_dim: 96
@@ -45,7 +51,7 @@ model:
 
 # Experimental controls shared with configs/vit_baseline.yaml -- both files
 # must agree on everything below so the two runs are a fair comparison
-# (Part 2, "Experimental Controls"). Unchanged from the previous run.
+# (Part 2, "Experimental Controls"). Unchanged from previous runs.
 data:
   data_root: ./data
   random_seed: 705643
