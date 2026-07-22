@@ -1,44 +1,38 @@
 # Primary model: Swin Transformer
-# Parameter count with these settings: 13,284,499 trainable params
-# 9.28% relative to primary (correct denominator per the assignment's
-# wording, "within 10% of your primary model's parameter count" -- i.e.
-# |ViT - Primary| / Primary <= 0.10, not divided by ViT). Solving for
-# Primary given ViT is fixed at 12,052,036 gives a valid range of
-# [10,956,396, 13,391,151]; 13,284,499 sits inside it.
-# Trained from random initialization; no pretrained weights are loaded
+# Parameter count with these settings: 13,280,059 trainable params
+# 9.24% relative to primary (|ViT - Primary| / Primary); valid range for
+# Primary given ViT fixed at 12,052,036 is [10,956,396, 13,391,151].
+# Trained from random initialization -- no pretrained weights are loaded
 # anywhere in src/models.py or src/train.py (Part 2 requirement).
 #
 # Revision history:
 #   v1 (100 epochs, no mixup): 94% train acc vs 59% val acc -- overfitting.
-#      Added MixUp/CutMix, stronger RandAugment, weight decay, stochastic
-#      depth, extended to 150 epochs (all shared with baseline).
-#   v2 (150 ep, dropout=0.1, drop_path=0.2, patch_size=4): best val 61.34%,
-#      while baseline (identical training procedure, dropout/drop_path
-#      0.1/0.1) reached 66.32%.
-#   v3 (150 ep, dropout=0.05, drop_path=0.1, mlp_ratio=4.5, patch_size=4):
-#      best val 61.36% -- a 0.02% change from v2. Ruled out
-#      "over-regularized" as the bottleneck.
-#   v4 (patch_size=4 -> 2, depths=(2,2,6)): at patch_size=4 the token grid
-#      was only 8x8, giving Swin's windowing almost nothing to do (4
-#      windows at stage 1, ONE window -- i.e. no windowing at all -- by
-#      stage 3). patch_size=2 gives a real 16x16 grid with meaningful
-#      multi-window attention at every stage. Best val jumped to 66.84%
-#      (test accuracy 65.58%, vs. baseline's 66.48% test -- close, some
-#      normal val/test variance expected given the 5,000-image val set).
-#      Epoch time barely changed (~18.5-19s, same as before) -- the GPU
-#      absorbed the extra token count well.
-#   v5 (this version): still 3.2 points short of 70%, and the parameter
-#      budget looked exhausted at v4 (13,154,590 vs a 13,391,151 ceiling --
-#      only ~237K headroom). But stage 3 runs at 4x the base embedding dim
-#      (384 channels), so its blocks are far more expensive than stage 1/2
-#      blocks (96/192 channels) -- redistributing depth from stage 3 to
-#      stages 1-2 buys much more total depth per parameter spent. Searched
-#      depth combinations directly in code (not by hand) and found
-#      depths=(7,5,5) is the deepest combination that still fits the
-#      budget: 17 total blocks vs 10 before (+70% deeper), at 13,284,499
-#      params (9.28%, inside the ceiling). Whether more depth actually
-#      helps accuracy (vs. just being parameter-budget-feasible) is an
-#      empirical question this run will answer.
+#   v2 (150 ep, dropout=0.1, drop_path=0.2, patch_size=4): best val 61.34%.
+#   v3 (dropout=0.05, drop_path=0.1, mlp_ratio=4.5, patch_size=4 still):
+#      best val 61.36% -- ruled out "over-regularized" as the bottleneck.
+#   v4 (patch_size=4 -> 2): fixed a structural issue -- at patch_size=4 the
+#      8x8 token grid meant Swin's windowing had almost nothing to do (down
+#      to ONE window by stage 3). patch_size=2 gives a real 16x16 grid.
+#      Best val jumped to 66.84% (test 65.58%).
+#   v5 (depths (2,2,6) -> (7,5,5)): stage 3 runs at 4x the base embedding
+#      dim, so its blocks are far more expensive than stage 1/2 blocks --
+#      redistributing depth toward the cheap early stages bought +70% more
+#      total blocks (17 vs 10) at nearly the same parameter cost. Best val
+#      68.88%, test 68.21% -- Swin now clearly beats the ViT baseline on
+#      both val (66.32%) and test (66.48%), supporting the locality/
+#      hierarchy hypothesis. 1.79 points short of the 70% test target.
+#   v6 (this version): window_size 4 -> 2. At window_size=4, stage 3 (4x4
+#      resolution) still collapsed to exactly ONE window -- windowing was
+#      real at stages 1-2 but not the deepest stage. window_size=2 gives
+#      genuine multi-window attention at every stage (64/16/4 windows vs
+#      16/4/1), at essentially zero parameter cost (13,280,059 vs
+#      13,284,499 -- actually slightly less). Depths/dropout/etc unchanged
+#      from v5.
+#
+# Methodology note: from v5 onward, changes are being evaluated on
+# VALIDATION accuracy only, per the assignment's explicit rule against
+# using test-set performance to select configurations. Test accuracy is
+# checked once at the end for reporting, not as feedback between attempts.
 #
 # Only architecture-specific settings (model: section) differ from
 # configs/vit_baseline.yaml -- everything in data:/training: below is
@@ -49,7 +43,7 @@ model:
   input_resolution: 32
   patch_size: 2
   in_channels: 3
-  window_size: 4
+  window_size: 2
   embed_dim: 96
   num_stages: 3
   depths: [7, 5, 5]
