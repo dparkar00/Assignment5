@@ -5,6 +5,7 @@ run quickly and without downloading CIFAR-100 or contacting W&B's servers
 (tests set WANDB_MODE=disabled).
 """
 
+import csv
 import os
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ os.environ.setdefault("WANDB_MODE", "disabled")
 
 from src.models import SwinTransformer, VisionTransformer  # noqa: E402
 from src.train import (  # noqa: E402
+    EpochContext,
     build_model,
     build_synthetic_loaders,
     build_warmup_cosine_schedule,
@@ -128,10 +130,9 @@ class TestRunOneEpoch:
         train_loader, _ = build_synthetic_loaders(batch_size=8, num_classes=10)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
         criterion = torch.nn.CrossEntropyLoss()
+        context = EpochContext(optimizer=optimizer, grad_clip_norm=1.0)
 
-        loss, accuracy = run_one_epoch(
-            model, train_loader, torch.device("cpu"), criterion, optimizer, grad_clip_norm=1.0, scaler=None
-        )
+        loss, accuracy = run_one_epoch(model, train_loader, torch.device("cpu"), criterion, context)
         assert loss == loss  # not NaN
         assert 0.0 <= accuracy <= 1.0
 
@@ -141,9 +142,7 @@ class TestRunOneEpoch:
         criterion = torch.nn.CrossEntropyLoss()
 
         params_before = [p.clone() for p in model.parameters()]
-        run_one_epoch(
-            model, val_loader, torch.device("cpu"), criterion, optimizer=None, grad_clip_norm=0.0, scaler=None
-        )
+        run_one_epoch(model, val_loader, torch.device("cpu"), criterion, EpochContext())
         params_after = list(model.parameters())
         assert all(torch.equal(a, b) for a, b in zip(params_before, params_after))
 
@@ -209,3 +208,67 @@ training:
         assert "model_state_dict" in checkpoint
         assert "val_accuracy" in checkpoint
         assert "epoch" in checkpoint
+
+    def test_dry_run_with_mixup_cutmix_enabled(self, tmp_path):
+        """End-to-end check that enabling MixUp/CutMix via config doesn't
+        break training -- loss stays finite and the run completes normally.
+        """
+        config_path = tmp_path / "test_config_mixup.yaml"
+        checkpoint_dir = tmp_path / "checkpoints_mixup"
+        log_path = tmp_path / "logs" / "test_training_mixup.csv"
+
+        config_path.write_text(
+            f"""
+model:
+  name: vit
+  input_resolution: 32
+  patch_size: 4
+  in_channels: 3
+  embed_dim: 32
+  depth: 2
+  num_heads: 4
+  mlp_ratio: 2.0
+  dropout: 0.0
+  drop_path_rate: 0.0
+  num_classes: 10
+
+data:
+  data_root: ./data
+  random_seed: 42
+  randaugment_num_ops: 2
+  randaugment_magnitude: 9
+  random_crop_padding: 4
+  mixup_cutmix_enabled: true
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mixup_cutmix_prob: 1.0
+  mixup_switch_prob: 0.5
+
+training:
+  batch_size: 8
+  random_seed: 42
+  epochs: 2
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.01
+  lr_schedule: cosine
+  warmup_epochs: 1
+  label_smoothing: 0.1
+  grad_clip_norm: 1.0
+  mixed_precision: false
+  checkpoint_dir: {checkpoint_dir}
+  log_path: {log_path}
+  wandb_project: test-project
+  wandb_run_name: test-run-mixup
+"""
+        )
+
+        train(str(config_path), dry_run=True, epochs_override=2)
+
+        assert log_path.exists()
+        with open(log_path) as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 2
+        for row in rows:
+            assert float(row["train_loss"]) == float(row["train_loss"])  # not NaN
+            assert float(row["train_loss"]) > 0

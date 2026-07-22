@@ -6,6 +6,15 @@
 #   python -c "from src.models import *; ..." to reproduce the search.
 # Trained from random initialization -- no pretrained weights are loaded
 # anywhere in src/models.py or src/train.py (Part 2 requirement).
+#
+# Hyperparameters below were revised after the first 100-epoch run showed
+# even worse overfitting than Swin (98.6% train acc vs 60.5% val acc) --
+# this baseline previously had ZERO dropout/stochastic depth, unlike Swin's
+# 0.1 drop_path_rate, which plausibly explains the gap. Added regularization
+# here; also picked up the shared changes (MixUp/CutMix, stronger
+# RandAugment, higher weight decay, longer training) that must match
+# configs/primary.yaml under "Experimental Controls" below. dropout/
+# drop_path_rate are architecture-specific and NOT required to match Swin's.
 
 model:
   name: vit
@@ -16,8 +25,8 @@ model:
   depth: 12
   num_heads: 6
   mlp_ratio: 4.0
-  dropout: 0.0
-  drop_path_rate: 0.0
+  dropout: 0.1
+  drop_path_rate: 0.1
   num_classes: 100
 
 # Must match configs/primary.yaml exactly (Part 2, "Experimental Controls").
@@ -25,17 +34,22 @@ data:
   data_root: ./data
   random_seed: 705643
   randaugment_num_ops: 2
-  randaugment_magnitude: 9
+  randaugment_magnitude: 12
   random_crop_padding: 4
+  mixup_cutmix_enabled: true
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  mixup_switch_prob: 0.5
 
 training:
   batch_size: 256
   num_workers: 2
   random_seed: 705643
-  epochs: 100
+  epochs: 150
   optimizer: adamw
   learning_rate: 0.001
-  weight_decay: 0.05
+  weight_decay: 0.08
   lr_schedule: cosine
   warmup_epochs: 5
   label_smoothing: 0.1

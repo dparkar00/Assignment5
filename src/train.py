@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import gc
 import time
 from pathlib import Path
@@ -39,6 +40,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, TensorDataset
 
+from src.augment import MixupCutmixConfig, apply_mixup_cutmix, soft_cross_entropy
 from src.data import DataConfig, build_datasets, build_dataloaders
 from src.models import (
     SwinConfig,
@@ -103,53 +105,120 @@ def build_warmup_cosine_schedule(
     return LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
+@dataclasses.dataclass
+class EpochContext:
+    """Bundles the training-specific knobs run_one_epoch needs, so its
+    signature doesn't keep growing every time a new training feature (grad
+    clipping, mixed precision, MixUp/CutMix, ...) is added. `optimizer=None`
+    signals a validation pass -- everything else is ignored in that case.
+    """
+
+    optimizer: torch.optim.Optimizer | None = None
+    grad_clip_norm: float = 0.0
+    scaler: torch.cuda.amp.GradScaler | None = None
+    mixup_config: MixupCutmixConfig | None = None
+
+
+def _forward_and_loss(
+    model: nn.Module,
+    images: torch.Tensor,
+    targets: torch.Tensor,
+    criterion: nn.Module,
+    mixup_config: MixupCutmixConfig | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass producing (outputs, loss), applying MixUp/CutMix first
+    if configured. Shared by both the plain and mixed-precision code paths
+    in _train_step, so that branching logic isn't duplicated.
+    """
+    if mixup_config is not None:
+        mixed_images, soft_targets = apply_mixup_cutmix(images, targets, mixup_config)
+        outputs = model(mixed_images)
+        loss = soft_cross_entropy(outputs, soft_targets)
+    else:
+        outputs = model(images)
+        loss = criterion(outputs, targets)
+    return outputs, loss
+
+
+def _train_step(
+    model: nn.Module,
+    images: torch.Tensor,
+    targets: torch.Tensor,
+    criterion: nn.Module,
+    context: EpochContext,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward + backward + optimizer step for one training batch. Returns
+    (outputs, loss) for the caller to accumulate metrics from; model
+    parameters are updated in place.
+    """
+    context.optimizer.zero_grad(set_to_none=True)
+    use_amp = context.scaler is not None
+
+    if use_amp:
+        with torch.autocast(device_type=images.device.type, dtype=torch.float16):
+            outputs, loss = _forward_and_loss(
+                model, images, targets, criterion, context.mixup_config
+            )
+        context.scaler.scale(loss).backward()
+        if context.grad_clip_norm > 0:
+            context.scaler.unscale_(context.optimizer)
+            nn.utils.clip_grad_norm_(model.parameters(), context.grad_clip_norm)
+        context.scaler.step(context.optimizer)
+        context.scaler.update()
+    else:
+        outputs, loss = _forward_and_loss(model, images, targets, criterion, context.mixup_config)
+        loss.backward()
+        if context.grad_clip_norm > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), context.grad_clip_norm)
+        context.optimizer.step()
+
+    return outputs, loss
+
+
+def _eval_step(
+    model: nn.Module, images: torch.Tensor, targets: torch.Tensor, criterion: nn.Module
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Forward pass only, no backward, no MixUp/CutMix -- for validation
+    batches, which must stay a deterministic measurement on real data.
+    """
+    outputs = model(images)
+    loss = criterion(outputs, targets)
+    return outputs, loss
+
+
 def run_one_epoch(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
     criterion: nn.Module,
-    optimizer: torch.optim.Optimizer | None,
-    grad_clip_norm: float,
-    scaler: torch.cuda.amp.GradScaler | None,
+    context: EpochContext,
 ) -> tuple[float, float]:
-    """Run one full pass over `loader`. Training if `optimizer` is given,
-    otherwise a no-grad validation pass. Returns (avg_loss, accuracy).
+    """Run one full pass over `loader`. Training if `context.optimizer` is
+    given, otherwise a no-grad validation pass. Returns (avg_loss, accuracy).
+
+    Training accuracy under MixUp/CutMix is computed against each sample's
+    *original* (pre-mix) label, which slightly undercounts correct
+    predictions on mixed batches; this is standard practice and only
+    affects the informational train_accuracy metric, not the loss actually
+    optimized or any validation number.
     """
-    is_training = optimizer is not None
+    is_training = context.optimizer is not None
     model.train(is_training)
 
     total_loss = 0.0
     correct = 0
     total = 0
 
-    context = torch.enable_grad() if is_training else torch.no_grad()
-    with context:
+    grad_context = torch.enable_grad() if is_training else torch.no_grad()
+    with grad_context:
         for images, targets in loader:
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
 
-            use_amp = scaler is not None and is_training
             if is_training:
-                optimizer.zero_grad(set_to_none=True)
-
-            if use_amp:
-                with torch.autocast(device_type=device.type, dtype=torch.float16):
-                    outputs = model(images)
-                    loss = criterion(outputs, targets)
-                scaler.scale(loss).backward()
-                if grad_clip_norm > 0:
-                    scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                scaler.step(optimizer)
-                scaler.update()
+                outputs, loss = _train_step(model, images, targets, criterion, context)
             else:
-                outputs = model(images)
-                loss = criterion(outputs, targets)
-                if is_training:
-                    loss.backward()
-                    if grad_clip_norm > 0:
-                        nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
-                    optimizer.step()
+                outputs, loss = _eval_step(model, images, targets, criterion)
 
             batch_size = images.size(0)
             total_loss += loss.item() * batch_size
@@ -174,11 +243,43 @@ def build_synthetic_loaders(
     return train_loader, val_loader
 
 
-def print_run_settings(model_cfg: dict, train_cfg: dict, device: torch.device, epochs: int) -> None:
+@dataclasses.dataclass
+class RunConfig:
+    """Bundles the three YAML config sections (model/data/training) as one
+    object, instead of passing three separate dicts to every function that
+    needs some combination of them. Built once in `train()` and threaded
+    through everything downstream.
+    """
+
+    model: dict
+    data: dict
+    training: dict
+
+
+def resolve_run_config(
+    config_path: str, data_root_override: str | None, checkpoint_dir_override: str | None
+) -> RunConfig:
+    """Load a YAML config and apply any path overrides, without ever
+    writing back to the file on disk (see `train`'s docstring for why that
+    matters for `git pull`).
+    """
+    raw_config = load_yaml_config(config_path)
+    model_cfg, data_cfg, train_cfg = raw_config["model"], raw_config["data"], raw_config["training"]
+
+    if data_root_override is not None:
+        data_cfg = {**data_cfg, "data_root": data_root_override}
+    if checkpoint_dir_override is not None:
+        train_cfg = {**train_cfg, "checkpoint_dir": checkpoint_dir_override}
+
+    return RunConfig(model=model_cfg, data=data_cfg, training=train_cfg)
+
+
+def print_run_settings(config: RunConfig, device: torch.device, epochs: int) -> None:
     """Print every setting the assignment requires to be documented, so a
     full record of the run's configuration is captured in the run's stdout
     log alongside the CSV/W&B metrics.
     """
+    model_cfg, data_cfg, train_cfg = config.model, config.data, config.training
     print(f"Device: {device}")
     print(f"Model: {model_cfg['name']}")
     print(
@@ -197,15 +298,24 @@ def print_run_settings(model_cfg: dict, train_cfg: dict, device: torch.device, e
         f"Grad clip norm: {train_cfg['grad_clip_norm']}  "
         f"Mixed precision: {train_cfg['mixed_precision'] and device.type == 'cuda'}"
     )
+    mixup_enabled = data_cfg.get("mixup_cutmix_enabled", False)
+    if mixup_enabled:
+        print(
+            f"MixUp/CutMix: enabled  mixup_alpha={data_cfg.get('mixup_alpha', 0.2)}  "
+            f"cutmix_alpha={data_cfg.get('cutmix_alpha', 1.0)}  "
+            f"prob={data_cfg.get('mixup_cutmix_prob', 0.5)}  "
+            f"switch_prob={data_cfg.get('mixup_switch_prob', 0.5)}"
+        )
+    else:
+        print("MixUp/CutMix: disabled")
     print("Pretrained weights: False (model built with random initialization)")
 
 
-def build_loaders_from_config(
-    model_cfg: dict, data_cfg: dict, train_cfg: dict, dry_run: bool
-) -> tuple[DataLoader, DataLoader]:
+def build_loaders_from_config(config: RunConfig, dry_run: bool) -> tuple[DataLoader, DataLoader]:
     """Build train/val DataLoaders, either synthetic (--dry-run) or real
     CIFAR-100 via src.data, using the resolution/batch size from config.
     """
+    model_cfg, data_cfg, train_cfg = config.model, config.data, config.training
     if dry_run:
         return build_synthetic_loaders(
             batch_size=train_cfg["batch_size"], num_classes=model_cfg["num_classes"]
@@ -232,6 +342,31 @@ def build_loaders_from_config(
     return train_loader, val_loader
 
 
+def build_mixup_config(config: RunConfig) -> MixupCutmixConfig | None:
+    """Build the MixUp/CutMix config from the shared `data:` YAML section.
+
+    Lives under `data:`, not `training:`, because MixUp/CutMix is a data
+    augmentation, and "data augmentations" is one of the settings the
+    assignment requires to be identical between configs/primary.yaml and
+    configs/vit_baseline.yaml (Part 2, Experimental Controls). Returns None
+    if the config doesn't enable it (e.g. an older config without these
+    keys), in which case run_one_epoch falls back to standard hard-label
+    cross entropy.
+    """
+    model_cfg, data_cfg, train_cfg = config.model, config.data, config.training
+    if not data_cfg.get("mixup_cutmix_enabled", False):
+        return None
+    return MixupCutmixConfig(
+        num_classes=model_cfg["num_classes"],
+        mixup_alpha=data_cfg.get("mixup_alpha", 0.2),
+        cutmix_alpha=data_cfg.get("cutmix_alpha", 1.0),
+        prob=data_cfg.get("mixup_cutmix_prob", 0.5),
+        switch_prob=data_cfg.get("mixup_switch_prob", 0.5),
+        label_smoothing=train_cfg["label_smoothing"],
+        enabled=True,
+    )
+
+
 def save_checkpoint(model: nn.Module, epoch: int, val_accuracy: float, path: Path) -> None:
     """Save a checkpoint containing everything needed to resume evaluation:
     epoch number, model weights, and the validation accuracy that earned it.
@@ -246,6 +381,178 @@ def log_epoch_to_csv(log_path: Path, row: list) -> None:
     """Append one epoch's metrics as a row to the exported CSV log."""
     with open(log_path, "a", newline="", encoding="utf-8") as csv_file:
         csv.writer(csv_file).writerow(row)
+
+
+@dataclasses.dataclass
+class TrainingSetup:
+    """Everything built from config that the epoch loop needs to actually
+    train: optimizer, LR schedule, loss function, AMP scaler, and
+    MixUp/CutMix config. Collapses five separate train() locals into one.
+    """
+
+    optimizer: torch.optim.Optimizer
+    scheduler: LambdaLR
+    criterion: nn.Module
+    scaler: torch.cuda.amp.GradScaler | None
+    mixup_config: MixupCutmixConfig | None
+
+
+@dataclasses.dataclass
+class ModelBundle:
+    """Model + data loaders + device for a run, built together since the
+    model must be moved to the same device the loaders will stream to.
+    """
+
+    model: nn.Module
+    train_loader: DataLoader
+    val_loader: DataLoader
+    device: torch.device
+
+
+def build_model_bundle(config: RunConfig, dry_run: bool) -> ModelBundle:
+    """Pick a device, build the data loaders, and build+place the model."""
+    device = get_device()
+    train_loader, val_loader = build_loaders_from_config(config, dry_run)
+    model = build_model(config.model).to(device)
+    return ModelBundle(model=model, train_loader=train_loader, val_loader=val_loader, device=device)
+
+
+def build_training_setup(bundle: ModelBundle, config: RunConfig, epochs: int) -> TrainingSetup:
+    """Construct the optimizer, schedule, loss, scaler, and MixUp/CutMix
+    config for a run. Also where the "only AdamW is supported" check lives.
+    """
+    train_cfg = config.training
+    if train_cfg["optimizer"].lower() != "adamw":
+        raise ValueError(
+            f"Only 'adamw' is currently wired up (got {train_cfg['optimizer']!r}); "
+            "AdamW is used because it decouples weight decay from the gradient "
+            "update, which empirically works better than plain Adam or SGD for "
+            "training Transformers from scratch."
+        )
+    optimizer = AdamW(
+        bundle.model.parameters(),
+        lr=train_cfg["learning_rate"],
+        weight_decay=train_cfg["weight_decay"],
+    )
+    scheduler = build_warmup_cosine_schedule(optimizer, train_cfg["warmup_epochs"], epochs)
+    criterion = nn.CrossEntropyLoss(label_smoothing=train_cfg["label_smoothing"])
+    mixup_config = build_mixup_config(config)
+
+    use_amp = train_cfg["mixed_precision"] and bundle.device.type == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
+
+    return TrainingSetup(
+        optimizer=optimizer, scheduler=scheduler, criterion=criterion, scaler=scaler,
+        mixup_config=mixup_config,
+    )
+
+
+@dataclasses.dataclass
+class OutputPaths:
+    """Where this run's checkpoints and CSV log go."""
+
+    checkpoint_dir: Path
+    log_path: Path
+
+
+@dataclasses.dataclass
+class RunState:
+    """Bundles the pieces that stay fixed for the whole run, so the
+    per-epoch helper below doesn't need a long parameter list -- none of
+    these change epoch to epoch.
+    """
+
+    bundle: ModelBundle
+    paths: OutputPaths
+    train_context: EpochContext
+    val_context: EpochContext
+
+
+def prepare_run_state(
+    bundle: ModelBundle, config: RunConfig, setup: TrainingSetup, num_params: int, dry_run: bool
+) -> RunState:
+    """Create output directories, start the W&B run, write the CSV header,
+    and bundle everything the epoch loop needs into one RunState.
+    """
+    train_cfg, model_cfg, data_cfg = config.training, config.model, config.data
+
+    checkpoint_dir = Path(train_cfg["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    log_path = Path(train_cfg["log_path"])
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    wandb.init(
+        project=train_cfg["wandb_project"],
+        name=train_cfg["wandb_run_name"],
+        mode="disabled" if dry_run else "online",
+        config={
+            **model_cfg, **data_cfg, **train_cfg,
+            "num_parameters": num_params, "device": str(bundle.device), "pretrained": False,
+        },
+    )
+
+    csv_fields = [
+        "epoch", "train_loss", "train_accuracy", "val_loss", "val_accuracy", "learning_rate",
+        "epoch_duration_seconds",
+    ]
+    with open(log_path, "w", newline="", encoding="utf-8") as csv_file:
+        csv.writer(csv_file).writerow(csv_fields)
+
+    return RunState(
+        bundle=bundle,
+        paths=OutputPaths(checkpoint_dir=checkpoint_dir, log_path=log_path),
+        train_context=EpochContext(
+            optimizer=setup.optimizer, grad_clip_norm=train_cfg["grad_clip_norm"],
+            scaler=setup.scaler, mixup_config=setup.mixup_config,
+        ),
+        val_context=EpochContext(),
+    )
+
+
+def run_epoch_and_log(state: RunState, setup: TrainingSetup, epoch: int, epochs: int) -> float:
+    """Run one epoch of train+val, log to stdout/W&B/CSV, checkpoint the
+    latest weights, and return this epoch's validation accuracy (the
+    caller is responsible for tracking the best one across epochs).
+    """
+    epoch_start = time.time()
+    train_loss, train_accuracy = run_one_epoch(
+        state.bundle.model, state.bundle.train_loader, state.bundle.device,
+        setup.criterion, state.train_context,
+    )
+    val_loss, val_accuracy = run_one_epoch(
+        state.bundle.model, state.bundle.val_loader, state.bundle.device,
+        setup.criterion, state.val_context,
+    )
+
+    current_lr = setup.optimizer.param_groups[0]["lr"]
+    setup.scheduler.step()
+    epoch_duration = time.time() - epoch_start
+
+    print(
+        f"Epoch {epoch + 1}/{epochs}  train_loss={train_loss:.4f}  train_acc={train_accuracy:.4f}  "
+        f"val_loss={val_loss:.4f}  val_acc={val_accuracy:.4f}  lr={current_lr:.6f}  "
+        f"time={epoch_duration:.1f}s"
+    )
+    wandb.log(
+        {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "train_accuracy": train_accuracy,
+            "val_loss": val_loss,
+            "val_accuracy": val_accuracy,
+            "learning_rate": current_lr,
+            "epoch_duration_seconds": epoch_duration,
+        }
+    )
+    log_epoch_to_csv(
+        state.paths.log_path,
+        [epoch + 1, train_loss, train_accuracy, val_loss, val_accuracy, current_lr, epoch_duration],
+    )
+    save_checkpoint(
+        state.bundle.model, epoch + 1, val_accuracy, state.paths.checkpoint_dir / "last.pt"
+    )
+
+    return val_accuracy
 
 
 def train(
@@ -264,107 +571,27 @@ def train(
     "local changes." These overrides only affect this run's in-memory
     config, never the file on disk.
     """
-    config = load_yaml_config(config_path)
-    model_cfg, data_cfg, train_cfg = config["model"], config["data"], config["training"]
+    config = resolve_run_config(config_path, data_root_override, checkpoint_dir_override)
 
-    if data_root_override is not None:
-        data_cfg = {**data_cfg, "data_root": data_root_override}
-    if checkpoint_dir_override is not None:
-        train_cfg = {**train_cfg, "checkpoint_dir": checkpoint_dir_override}
+    set_seed(config.training["random_seed"])
+    epochs = epochs_override if epochs_override is not None else config.training["epochs"]
 
-    set_seed(train_cfg["random_seed"])
-    device = get_device()
-    epochs = epochs_override if epochs_override is not None else train_cfg["epochs"]
-    print_run_settings(model_cfg, train_cfg, device, epochs)
-
-    train_loader, val_loader = build_loaders_from_config(model_cfg, data_cfg, train_cfg, dry_run)
-
-    model = build_model(model_cfg).to(device)
-    num_params = count_parameters(model)
+    bundle = build_model_bundle(config, dry_run)
+    print_run_settings(config, bundle.device, epochs)
+    num_params = count_parameters(bundle.model)
     print(f"Trainable parameters: {num_params:,}")
 
-    if train_cfg["optimizer"].lower() != "adamw":
-        raise ValueError(
-            f"Only 'adamw' is currently wired up (got {train_cfg['optimizer']!r}); "
-            "AdamW is used because it decouples weight decay from the gradient "
-            "update, which empirically works better than plain Adam or SGD for "
-            "training Transformers from scratch."
-        )
-    optimizer = AdamW(
-        model.parameters(), lr=train_cfg["learning_rate"], weight_decay=train_cfg["weight_decay"]
-    )
-    scheduler = build_warmup_cosine_schedule(optimizer, train_cfg["warmup_epochs"], epochs)
-    criterion = nn.CrossEntropyLoss(label_smoothing=train_cfg["label_smoothing"])
-
-    use_amp = train_cfg["mixed_precision"] and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp) if use_amp else None
-
-    checkpoint_dir = Path(train_cfg["checkpoint_dir"])
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    log_path = Path(train_cfg["log_path"])
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    wandb.init(
-        project=train_cfg["wandb_project"],
-        name=train_cfg["wandb_run_name"],
-        mode="disabled" if dry_run else "online",
-        config={
-            **model_cfg, **train_cfg,
-            "num_parameters": num_params, "device": str(device), "pretrained": False,
-        },
-    )
-
-    csv_fields = [
-        "epoch", "train_loss", "train_accuracy", "val_loss", "val_accuracy", "learning_rate",
-        "epoch_duration_seconds",
-    ]
-    with open(log_path, "w", newline="", encoding="utf-8") as csv_file:
-        csv.writer(csv_file).writerow(csv_fields)
+    setup = build_training_setup(bundle, config, epochs)
+    state = prepare_run_state(bundle, config, setup, num_params, dry_run)
 
     best_val_accuracy = 0.0
     for epoch in range(epochs):
-        epoch_start = time.time()
-
-        train_loss, train_accuracy = run_one_epoch(
-            model, train_loader, device, criterion, optimizer, train_cfg["grad_clip_norm"], scaler
-        )
-        val_loss, val_accuracy = run_one_epoch(
-            model, val_loader, device, criterion, optimizer=None, grad_clip_norm=0.0, scaler=None
-        )
-
-        current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step()
-        epoch_duration = time.time() - epoch_start
-
-        print(
-            f"Epoch {epoch + 1}/{epochs}  train_loss={train_loss:.4f}  "
-            f"train_acc={train_accuracy:.4f}  "
-            f"val_loss={val_loss:.4f}  val_acc={val_accuracy:.4f}  lr={current_lr:.6f}  "
-            f"time={epoch_duration:.1f}s"
-        )
-        wandb.log(
-            {
-                "epoch": epoch + 1,
-                "train_loss": train_loss,
-                "train_accuracy": train_accuracy,
-                "val_loss": val_loss,
-                "val_accuracy": val_accuracy,
-                "learning_rate": current_lr,
-                "epoch_duration_seconds": epoch_duration,
-            }
-        )
-        log_epoch_to_csv(
-            log_path,
-            [
-                epoch + 1, train_loss, train_accuracy, val_loss, val_accuracy,
-                current_lr, epoch_duration,
-            ],
-        )
-
-        save_checkpoint(model, epoch + 1, val_accuracy, checkpoint_dir / "last.pt")
+        val_accuracy = run_epoch_and_log(state, setup, epoch, epochs)
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
-            save_checkpoint(model, epoch + 1, val_accuracy, checkpoint_dir / "best.pt")
+            save_checkpoint(
+                state.bundle.model, epoch + 1, val_accuracy, state.paths.checkpoint_dir / "best.pt"
+            )
 
     print(f"Best validation accuracy: {best_val_accuracy:.4f}")
     wandb.finish()
@@ -373,11 +600,9 @@ def train(
     # Python process when training both models from one Colab cell, so
     # anything left referencing GPU/CPU memory (model, optimizer, dataloader
     # workers) should be released rather than accumulating across both runs.
-    del model, optimizer, scheduler, train_loader, val_loader
-    if scaler is not None:
-        del scaler
+    del bundle, setup, state
     gc.collect()
-    if device.type == "cuda":
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 

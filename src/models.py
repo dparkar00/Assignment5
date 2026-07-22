@@ -119,18 +119,24 @@ def count_parameters(model: nn.Module) -> int:
 
 
 def window_partition(x: torch.Tensor, window_size: int) -> torch.Tensor:
-    """(B, H, W, C) -> (num_windows*B, window_size, window_size, C)."""
-    B, H, W, C = x.shape
-    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
-    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+    """(batch, height, width, channels) -> (num_windows*batch, ws, ws, channels)."""
+    batch_size, height, width, channels = x.shape
+    x = x.view(
+        batch_size, height // window_size, window_size, width // window_size, window_size, channels
+    )
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, channels)
     return windows
 
 
-def window_reverse(windows: torch.Tensor, window_size: int, H: int, W: int) -> torch.Tensor:
-    """Inverse of window_partition: (num_windows*B, ws, ws, C) -> (B, H, W, C)."""
-    B = int(windows.shape[0] / (H * W / window_size / window_size))
-    x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
-    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
+def window_reverse(
+    windows: torch.Tensor, window_size: int, height: int, width: int
+) -> torch.Tensor:
+    """Inverse of window_partition: (windows*batch, ws, ws, ch) -> (batch, height, width, ch)."""
+    batch_size = int(windows.shape[0] / (height * width / window_size / window_size))
+    x = windows.view(
+        batch_size, height // window_size, width // window_size, window_size, window_size, -1
+    )
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(batch_size, height, width, -1)
     return x
 
 
@@ -182,33 +188,39 @@ class WindowAttention(nn.Module):
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """Forward pass."""
-        # x: (num_windows*B, N, C) where N = window_size*window_size
-        B_, N, C = x.shape
-        qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads)
+        # x: (num_windows*batch, num_tokens, channels) where num_tokens = window_size**2
+        windowed_batch, num_tokens, channels = x.shape
+        qkv = self.qkv(x).reshape(
+            windowed_batch, num_tokens, 3, self.num_heads, channels // self.num_heads
+        )
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (q * self.scale) @ k.transpose(-2, -1)  # (B_, heads, N, N)
+        # (windowed_batch, heads, num_tokens, num_tokens)
+        attn = (q * self.scale) @ k.transpose(-2, -1)
 
         relative_position_bias = self.relative_position_bias_table[
             self.relative_position_index.view(-1)
-        ].view(N, N, -1)
-        # (heads, N, N)
+        ].view(num_tokens, num_tokens, -1)
+        # (heads, num_tokens, num_tokens)
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()
         attn = attn + relative_position_bias.unsqueeze(0)
 
         if mask is not None:
-            # mask: (num_windows, N, N); attn currently (B_, heads, N, N) where
-            # B_ = batch * num_windows. Reshape to apply mask per-window.
+            # mask: (num_windows, num_tokens, num_tokens); attn currently
+            # (windowed_batch, heads, num_tokens, num_tokens) where
+            # windowed_batch = batch * num_windows. Reshape to apply mask per-window.
             num_windows = mask.shape[0]
-            attn = attn.view(B_ // num_windows, num_windows, self.num_heads, N, N)
+            attn = attn.view(
+                windowed_batch // num_windows, num_windows, self.num_heads, num_tokens, num_tokens
+            )
             attn = attn + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N)
+            attn = attn.view(-1, self.num_heads, num_tokens, num_tokens)
 
         attn = F.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B_, N, C)
+        x = (attn @ v).transpose(1, 2).reshape(windowed_batch, num_tokens, channels)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -262,8 +274,8 @@ class SwinTransformerBlock(nn.Module):
         assign each region of the shifted image a group id, then mask out
         attention between tokens from different groups within a window).
         """
-        H = W = self.input_resolution
-        img_mask = torch.zeros((1, H, W, 1))
+        height = width = self.input_resolution
+        img_mask = torch.zeros((1, height, width, 1))
         h_slices = (
             slice(0, -self.window_size),
             slice(-self.window_size, -self.shift_size),
@@ -289,33 +301,35 @@ class SwinTransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        H = W = self.input_resolution
-        B, L, C = x.shape
-        assert L == H * W, f"input feature has wrong size: {L} != {H}*{W}"
+        height = width = self.input_resolution
+        batch_size, seq_len, channels = x.shape
+        assert seq_len == height * width, (
+            f"input feature has wrong size: {seq_len} != {height}*{width}"
+        )
 
         shortcut = x
         x = self.norm1(x)
-        x = x.view(B, H, W, C)
+        x = x.view(batch_size, height, width, channels)
 
         if self.shift_size > 0:
             shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
         else:
             shifted_x = x
 
-        x_windows = window_partition(shifted_x, self.window_size)  # (nW*B, ws, ws, C)
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)
+        x_windows = window_partition(shifted_x, self.window_size)  # (nW*batch, ws, ws, channels)
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, channels)
 
         attn_windows = self.attn(x_windows, mask=self.attn_mask)
 
-        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
-        shifted_x = window_reverse(attn_windows, self.window_size, H, W)
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, channels)
+        shifted_x = window_reverse(attn_windows, self.window_size, height, width)
 
         if self.shift_size > 0:
             x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
         else:
             x = shifted_x
 
-        x = x.view(B, H * W, C)
+        x = x.view(batch_size, height * width, channels)
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
@@ -338,17 +352,17 @@ class PatchMerging(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        H = W = self.input_resolution
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        height = width = self.input_resolution
+        batch_size, seq_len, channels = x.shape
+        assert seq_len == height * width, "input feature has wrong size"
 
-        x = x.view(B, H, W, C)
+        x = x.view(batch_size, height, width, channels)
         x0 = x[:, 0::2, 0::2, :]
         x1 = x[:, 1::2, 0::2, :]
         x2 = x[:, 0::2, 1::2, :]
         x3 = x[:, 1::2, 1::2, :]
-        x = torch.cat([x0, x1, x2, x3], dim=-1)  # (B, H/2, W/2, 4C)
-        x = x.view(B, -1, 4 * C)
+        x = torch.cat([x0, x1, x2, x3], dim=-1)  # (batch, height/2, width/2, 4*channels)
+        x = x.view(batch_size, -1, 4 * channels)
 
         x = self.norm(x)
         x = self.reduction(x)
@@ -526,8 +540,10 @@ class MultiHeadSelfAttention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
+        batch_size, seq_len, channels = x.shape
+        qkv = self.qkv(x).reshape(
+            batch_size, seq_len, 3, self.num_heads, channels // self.num_heads
+        )
         qkv = qkv.permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
@@ -535,7 +551,7 @@ class MultiHeadSelfAttention(nn.Module):
         attn = F.softmax(attn, dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = (attn @ v).transpose(1, 2).reshape(batch_size, seq_len, channels)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -631,9 +647,9 @@ class VisionTransformer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
-        x = self.patch_embed(x)  # (B, num_patches, C)
-        B = x.shape[0]
-        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = self.patch_embed(x)  # (batch, num_patches, channels)
+        batch_size = x.shape[0]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
         x = torch.cat([cls_tokens, x], dim=1)
         x = x + self.pos_embed
         x = self.pos_drop(x)

@@ -3,6 +3,16 @@
 # (see src/models.py SwinConfig / VisionTransformer __main__ block)
 # Trained from random initialization -- no pretrained weights are loaded
 # anywhere in src/models.py or src/train.py (Part 2 requirement).
+#
+# Hyperparameters below were revised after the first 100-epoch run showed
+# clear overfitting (94% train acc vs 59% val acc, val loss flat from ~epoch
+# 85 on): added MixUp/CutMix, increased RandAugment strength, weight decay,
+# and stochastic depth, and extended training duration since stronger
+# regularization slows convergence. See training conversation for the
+# diagnosis. dropout/drop_path_rate are architecture-specific regularization
+# and are NOT required to match configs/vit_baseline.yaml (only listed
+# "Experimental Controls" below must match); mixup/cutmix/weight_decay/
+# epochs/etc. ARE required to match and do.
 
 model:
   name: swin
@@ -15,8 +25,8 @@ model:
   depths: [2, 2, 6]
   num_heads: [3, 6, 12]
   mlp_ratio: 4.0
-  dropout: 0.0
-  drop_path_rate: 0.1
+  dropout: 0.1
+  drop_path_rate: 0.2
   num_classes: 100
 
 # Experimental controls shared with configs/vit_baseline.yaml -- both files
@@ -26,17 +36,22 @@ data:
   data_root: ./data
   random_seed: 705643
   randaugment_num_ops: 2
-  randaugment_magnitude: 9
+  randaugment_magnitude: 12
   random_crop_padding: 4
+  mixup_cutmix_enabled: true
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  mixup_switch_prob: 0.5
 
 training:
   batch_size: 256
   num_workers: 2
   random_seed: 705643
-  epochs: 100
+  epochs: 150
   optimizer: adamw
   learning_rate: 0.001
-  weight_decay: 0.05
+  weight_decay: 0.08
   lr_schedule: cosine
   warmup_epochs: 5
   label_smoothing: 0.1
