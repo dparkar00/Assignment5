@@ -96,6 +96,28 @@
 #       for AdamW-trained transformers, which are known to be sensitive to
 #       instability in the first few steps before the LR ramps up. Genuine
 #       new hypothesis, not a repeat of the LR or weight-decay searches.
+# RESULT: best result yet, on both metrics. Swin val 70.54% (vs v8's
+# 70.28%), test 69.20% (vs v8's 68.66%) -- a genuine improvement, not
+# noise-sized, on both. Diagnosed the remaining val/test gap (1.34 pts)
+# into two components from the actual epoch-by-epoch log: (1) peak-
+# selection effect -- the checkpoint (epoch 146, val 70.54%) is the single
+# best of a ~30-epoch plateau averaging 70.29%, so ~0.25 pts of the gap is
+# just picking the luckiest epoch; (2) a real, mild late-stage overfitting
+# signal -- val_loss/train_loss gap is near zero through epoch ~120, then
+# widens to a consistent +0.20-0.22 for the last 30 epochs (train_loss
+# keeps falling 1.92->1.58; val_loss plateaus 1.84->1.80). This second
+# component is the larger piece and matches classic mild overfitting.
+#
+# ARCHITECTURE-ONLY CHANGE (v12): drop_path_rate 0.2 -> 0.3. Targets the
+# same problem (late-stage overfitting, diagnosed above) through a
+# genuinely different mechanism than v10's failed attempt: v10 tried
+# weight_decay (penalizes weight *magnitude*, applied uniformly); this
+# tries stochastic depth (randomly drops entire residual blocks during
+# training, a structural regularizer, not a magnitude one). Confirmed
+# parameter-neutral (13,284,499 either way). This is architecture-specific
+# (dropout/drop_path_rate are explicitly NOT required to match ViT's, per
+# the note in configs/vit_baseline.yaml) -- only Swin needs retraining,
+# not both models, unlike every prior shared-setting change.
 #
 # Only architecture-specific settings (model: section) differ from
 
@@ -115,7 +137,7 @@ model:
   num_heads: [3, 6, 12]
   mlp_ratio: 4.5
   dropout: 0.05
-  drop_path_rate: 0.2
+  drop_path_rate: 0.3
   num_classes: 100
 
 # Experimental controls shared with configs/vit_baseline.yaml -- both files
