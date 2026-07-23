@@ -16,6 +16,7 @@ from src.augment import (
 from src.data import (
     Cifar100Datasets,
     DataConfig,
+    build_data_config,
     build_dataloaders,
     build_datasets,
     build_eval_transform,

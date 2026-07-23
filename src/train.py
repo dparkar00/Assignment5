@@ -41,7 +41,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.augment import MixupCutmixConfig, apply_mixup_cutmix, soft_cross_entropy
-from src.data import DataConfig, build_datasets, build_dataloaders
+from src.data import build_data_config, build_datasets, build_dataloaders
 from src.models import (
     SwinConfig,
     SwinTransformer,
@@ -321,14 +321,7 @@ def build_loaders_from_config(config: RunConfig, dry_run: bool) -> tuple[DataLoa
             batch_size=train_cfg["batch_size"], num_classes=model_cfg["num_classes"]
         )
 
-    data_config = DataConfig(
-        data_root=data_cfg["data_root"],
-        input_resolution=model_cfg["input_resolution"],
-        random_seed=data_cfg["random_seed"],
-        randaugment_num_ops=data_cfg["randaugment_num_ops"],
-        randaugment_magnitude=data_cfg["randaugment_magnitude"],
-        random_crop_padding=data_cfg["random_crop_padding"],
-    )
+    data_config = build_data_config(model_cfg, data_cfg)
     print(
         "Loading CIFAR-100 (downloads ~170MB on first run only; cached after "
         "that) ..."

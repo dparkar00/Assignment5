@@ -303,6 +303,26 @@ class Cifar100Datasets:
     content_overlap_counts: dict
 
 
+def build_data_config(
+    model_cfg: dict, data_cfg: dict, data_root_override: str | None = None
+) -> DataConfig:
+    """Build a DataConfig from a YAML config's model:/data: sections.
+
+    Shared by src/train.py and src/evaluate.py, which both need to
+    construct the same DataConfig from the same config shape (train.py for
+    the train/val loaders, evaluate.py for the test loader) -- factored out
+    so that shape isn't duplicated in two places.
+    """
+    return DataConfig(
+        data_root=data_root_override or data_cfg["data_root"],
+        input_resolution=model_cfg["input_resolution"],
+        random_seed=data_cfg["random_seed"],
+        randaugment_num_ops=data_cfg["randaugment_num_ops"],
+        randaugment_magnitude=data_cfg["randaugment_magnitude"],
+        random_crop_padding=data_cfg["random_crop_padding"],
+    )
+
+
 def build_datasets(config: DataConfig, verbose: bool = True) -> Cifar100Datasets:
     """Download (if needed) CIFAR-100 and construct train/val/test datasets.
 
