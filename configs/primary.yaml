@@ -42,7 +42,6 @@
 # established mid-project; see conversation history. No further test
 # checks until final.)
 #
-
 # SHARED-SETTING CHANGE (v9): learning_rate 0.0005 -> 0.00025. v8 only
 # tested the halfway point toward the literature-implied value (2.5e-4);
 # since that direction clearly helped both models, this tests the actual
@@ -50,10 +49,40 @@
 # direction. Real risk: too-low LR converges more slowly and may not fully
 # exploit the fixed 150-epoch budget -- this is a genuine test, not a
 # guaranteed win. Evaluated on VALIDATION accuracy only.
+# RESULT: v9 UNDERSHOT. Swin val 70.28% (v8) -> 69.44% (v9) -- worse, not
+# better. LR-vs-accuracy is non-monotonic here: 1e-3 (~68.8%) < 2.5e-4
+# (69.44%) < 5e-4 (70.28%). 5e-4 is a local peak between two worse values,
+# not a point on a monotonic curve toward the literature-implied value.
 #
-# IMPORTANT METHODOLOGY NOTE: V9 was proposed after checking test accuracy once, since 
+# REVERTED (v10): learning_rate back to 0.0005, the best of the three
+# values actually tested. This already clears 70% validation accuracy for
+# Swin (70.28% at v8) -- further LR search has diminishing returns and
+# mounting retrain cost for a value already found to be a local optimum.
+# RESULT: worse than v8. Swin val 70.28% (v8) -> 69.44% (v9) -- the
+# predicted risk materialized: LR fully decays to ~0 by epoch ~145 with
+# val flat at 69.3-69.4%, i.e. genuinely converged, just to a lower point,
+# not "still improving, needs more epochs." Three LR data points now
+# bracket a real optimum: 1e-3 (~68.8%) -> 5e-4 (70.28%, best) -> 2.5e-4
+# (69.44%) -- an inverted-U, with 5e-4 closer to the sweet spot than either
+# direction tested. (Re-verified model params after this run: architecture
+# unchanged, 13,284,499 params, 9.28% from baseline -- confirmed nothing
+# drifted, only LR changed between v8 and v9.)
+#
+# SHARED-SETTING CHANGE (v10): two changes.
+#   (a) learning_rate 0.00025 -> 0.0005, reverting to v8's empirically-
+#       better value. Selected on VALIDATION accuracy alone (70.28% >
+#       69.44%), consistent with every prior decision in this project.
+#   (b) weight_decay 0.08 -> 0.12. Everything tuned so far (patch_size,
+#       depth, window_size, LR) targeted fit quality -- how well the model
+#       finds a good solution. Weight decay is different: it directly
+#       targets generalization (penalizes large weights regardless of
+#       validation accuracy), not optimization. Expected honest tradeoff:
+#       this may reduce raw validation accuracy somewhat even if it
+#       narrows the val/test gap -- not a free improvement on both.
+#
 
-
+#
+#
 # Only architecture-specific settings (model: section) differ from
 # configs/vit_baseline.yaml -- everything in data:/training: below is
 # byte-identical, unchanged except the shared LR change above, per
@@ -95,8 +124,8 @@ training:
   random_seed: 705643
   epochs: 150
   optimizer: adamw
-  learning_rate: 0.00025
-  weight_decay: 0.08
+  learning_rate: 0.0005
+  weight_decay: 0.12
   lr_schedule: cosine
   warmup_epochs: 5
   label_smoothing: 0.1

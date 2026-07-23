@@ -39,7 +39,25 @@
 # linear-scaling target rather than a second, smaller step in the same
 # direction. Real risk: too-low LR converges more slowly and may not fully
 # exploit the fixed 150-epoch budget -- this is a genuine test, not a
-# guaranteed win.
+# guaranteed win. Evaluated on VALIDATION accuracy only.
+# RESULT: worse than v8. Swin val 70.28% (v8) -> 69.44% (v9) -- the
+# predicted risk materialized: LR fully decays to ~0 by epoch ~145 with
+# val flat at 69.3-69.4%, i.e. genuinely converged, just to a lower point,
+# not "still improving, needs more epochs." Three LR data points now
+# bracket a real optimum: 1e-3 (~68.8%) -> 5e-4 (70.28%, best) -> 2.5e-4
+# (69.44%) -- an inverted-U, with 5e-4 closer to the sweet spot than either
+# direction tested.
+#
+# SHARED-SETTING CHANGE (v10): two changes bundled into one run, since
+# neither has actually been trained yet:
+#   (a) learning_rate 0.00025 -> 0.0005, reverting to v8's empirically-
+#       better value. Selected on VALIDATION accuracy alone (70.28% >
+#       69.44% for Swin), consistent with every prior decision in this
+#       project.
+#   (b) weight_decay 0.08 -> 0.12. Targets generalization directly (unlike
+#       LR, which targets fit quality) -- see configs/primary.yaml for the
+#       full reasoning.
+
 
 model:
   name: vit
@@ -73,8 +91,8 @@ training:
   random_seed: 705643
   epochs: 150
   optimizer: adamw
-  learning_rate: 0.00025
-  weight_decay: 0.08
+  learning_rate: 0.0005
+  weight_decay: 0.12
   lr_schedule: cosine
   warmup_epochs: 5
   label_smoothing: 0.1
