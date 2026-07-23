@@ -15,6 +15,21 @@
 # RandAugment, higher weight decay, longer training) that must match
 # configs/primary.yaml under "Experimental Controls" below. dropout/
 # drop_path_rate are architecture-specific and NOT required to match Swin's.
+#
+# SHARED-SETTING CHANGE (this version): learning_rate 0.001 -> 0.0005.
+# Swin plateaued at ~68.8% val across three genuinely different
+# architectures (v5/v6/v7 in configs/primary.yaml's revision history),
+# each landing within 0.1 points of each other despite real structural
+# differences -- strong evidence architecture was no longer the limiting
+# factor. The shared training recipe (this LR included) was set early and
+# never revisited as the architecture grew substantially deeper. The
+# original Swin paper's LR recipe (1e-3) is calibrated for batch_size=1024
+# via linear LR scaling; at our batch_size=256, that scaling implies
+# ~2.5e-4, a 4x difference from what we'd been using. Halving to 5e-4 (not
+# jumping straight to 2.5e-4) tests the hypothesis without overcorrecting,
+# since CIFAR-scale from-scratch training often tolerates higher LR than
+# ImageNet-calibrated recipes suggest. This requires retraining BOTH models
+# and must be applied identically to both, per "Experimental Controls".
 
 model:
   name: vit
@@ -48,7 +63,7 @@ training:
   random_seed: 705643
   epochs: 150
   optimizer: adamw
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.08
   lr_schedule: cosine
   warmup_epochs: 5
