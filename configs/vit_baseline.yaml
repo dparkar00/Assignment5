@@ -1,6 +1,10 @@
 # Plain ViT baseline
 # Parameter count with these settings: 12,052,036 trainable params
-# Difference from primary (Swin) model: 1.02% (required: <= 10%)
+# Difference from primary (Swin) model: 9.28% (required: <= 10%) --
+# recomputed against Swin's current 13,284,499 params (after the
+# patch_size/depth changes documented in configs/primary.yaml's revision
+# history). The original 1.02% figure was against Swin's Part 2 parameter
+# count (12,176,830) before those architecture changes and is now stale.
 # Found via grid search over embed_dim/depth/num_heads -- see the
 # parameter-matching search in the Part 2 conversation history, or rerun:
 #   python -c "from src.models import *; ..." to reproduce the search.
@@ -57,7 +61,13 @@
 #   (b) weight_decay 0.08 -> 0.12. Targets generalization directly (unlike
 #       LR, which targets fit quality) -- see configs/primary.yaml for the
 #       full reasoning.
-
+# RESULT: net negative for Swin on validation alone (69.48% < v8's
+# 70.28%). ViT baseline roughly flat (67.94% vs 67.86% val). See
+# configs/primary.yaml for the full result and the v11 change below.
+#
+# SHARED-SETTING CHANGE (v11): weight_decay 0.12 -> 0.08 (revert,
+# validation-justified) and warmup_epochs 5 -> 10 (untested lever --
+# see configs/primary.yaml for the full reasoning).
 
 model:
   name: vit
@@ -92,9 +102,9 @@ training:
   epochs: 150
   optimizer: adamw
   learning_rate: 0.0005
-  weight_decay: 0.12
+  weight_decay: 0.08
   lr_schedule: cosine
-  warmup_epochs: 5
+  warmup_epochs: 10
   label_smoothing: 0.1
   grad_clip_norm: 1.0
   mixed_precision: true

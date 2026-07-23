@@ -79,11 +79,26 @@
 #       validation accuracy), not optimization. Expected honest tradeoff:
 #       this may reduce raw validation accuracy somewhat even if it
 #       narrows the val/test gap -- not a free improvement on both.
+# RESULT: net negative for Swin, on validation alone (69.48% < v8's
+# 70.28%) -- no test accuracy needed to reach this conclusion. Test
+# accuracy also came in lower (68.27% vs v8's 68.66%), though the val/test
+# gap did narrow somewhat (1.21 vs 1.62 points) as hypothesized -- the
+# hypothesis about the gap was partially right, but didn't translate into
+# a net accuracy improvement. ViT baseline was roughly flat (67.94% vs
+# 67.86% val).
 #
-
-#
+# SHARED-SETTING CHANGE (v11): two changes.
+#   (a) weight_decay 0.12 -> 0.08, reverting -- justified by validation
+#       accuracy alone (70.28% > 69.48%), not by the test-accuracy
+#       comparison above (which agrees, but is not the justification).
+#   (b) warmup_epochs 5 -> 10. Untested lever: warmup was only 3.3% of
+#       total training (5/150 epochs), short relative to common practice
+#       for AdamW-trained transformers, which are known to be sensitive to
+#       instability in the first few steps before the LR ramps up. Genuine
+#       new hypothesis, not a repeat of the LR or weight-decay searches.
 #
 # Only architecture-specific settings (model: section) differ from
+
 # configs/vit_baseline.yaml -- everything in data:/training: below is
 # byte-identical, unchanged except the shared LR change above, per
 # "Experimental Controls".
@@ -125,9 +140,9 @@ training:
   epochs: 150
   optimizer: adamw
   learning_rate: 0.0005
-  weight_decay: 0.12
+  weight_decay: 0.08
   lr_schedule: cosine
-  warmup_epochs: 5
+  warmup_epochs: 10
   label_smoothing: 0.1
   grad_clip_norm: 1.0
   mixed_precision: true
