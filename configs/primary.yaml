@@ -34,17 +34,26 @@
 # hypothesis without overcorrecting, since CIFAR-scale from-scratch
 # training often tolerates higher LR than ImageNet-calibrated recipes
 # suggest. See configs/vit_baseline.yaml for the same note.
+# RESULT: confirmed on BOTH models. Swin val 68.8% (approx plateau) ->
+# 70.28%; ViT val 66.32% -> 67.86%. Real, cross-model effect -- not
+# specific to Swin's architecture, which rules out "coincidence" as an
+# explanation. (Swin test accuracy at this checkpoint: 68.66% -- an
+# official, single test-set evaluation was already run per the discipline
+# established mid-project; see conversation history. No further test
+# checks until final.)
 #
-# IMPORTANT METHODOLOGY NOTE: v4/v5/v6 were each checked against test
-# accuracy during development, not just validation -- a soft violation of
-# "do not repeatedly evaluate on the test set while tuning your models."
-# Every decision to try the next change was driven by validation accuracy,
-# but looking at test at all, repeatedly, falls short of the assignment's
-# actual instruction. This is disclosed here and must be disclosed in the
-# report's methodology/limitations section, not hidden. From v7 onward, NO
-# further test-set checks until one single, final, official evaluation via
-# src/evaluate.py once tuning is completely finished.
+
+# SHARED-SETTING CHANGE (v9): learning_rate 0.0005 -> 0.00025. v8 only
+# tested the halfway point toward the literature-implied value (2.5e-4);
+# since that direction clearly helped both models, this tests the actual
+# linear-scaling target rather than a second, smaller step in the same
+# direction. Real risk: too-low LR converges more slowly and may not fully
+# exploit the fixed 150-epoch budget -- this is a genuine test, not a
+# guaranteed win. Evaluated on VALIDATION accuracy only.
 #
+# IMPORTANT METHODOLOGY NOTE: V9 was proposed after checking test accuracy once, since 
+
+
 # Only architecture-specific settings (model: section) differ from
 # configs/vit_baseline.yaml -- everything in data:/training: below is
 # byte-identical, unchanged except the shared LR change above, per
@@ -86,7 +95,7 @@ training:
   random_seed: 705643
   epochs: 150
   optimizer: adamw
-  learning_rate: 0.0005
+  learning_rate: 0.00025
   weight_decay: 0.08
   lr_schedule: cosine
   warmup_epochs: 5

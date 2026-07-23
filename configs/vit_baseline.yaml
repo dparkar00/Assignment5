@@ -16,7 +16,7 @@
 # configs/primary.yaml under "Experimental Controls" below. dropout/
 # drop_path_rate are architecture-specific and NOT required to match Swin's.
 #
-# SHARED-SETTING CHANGE (this version): learning_rate 0.001 -> 0.0005.
+# SHARED-SETTING CHANGE (v8): learning_rate 0.001 -> 0.0005.
 # Swin plateaued at ~68.8% val across three genuinely different
 # architectures (v5/v6/v7 in configs/primary.yaml's revision history),
 # each landing within 0.1 points of each other despite real structural
@@ -30,6 +30,16 @@
 # since CIFAR-scale from-scratch training often tolerates higher LR than
 # ImageNet-calibrated recipes suggest. This requires retraining BOTH models
 # and must be applied identically to both, per "Experimental Controls".
+# RESULT: confirmed the hypothesis on BOTH models -- Swin val 68.8% (approx
+# plateau) -> 70.28%, ViT val 66.32% -> 67.86%. Real, cross-model effect.
+#
+# SHARED-SETTING CHANGE (v9): learning_rate 0.0005 -> 0.00025. v8 only
+# tested the halfway point toward the literature-implied value (2.5e-4);
+# since that direction clearly helped both models, this tests the actual
+# linear-scaling target rather than a second, smaller step in the same
+# direction. Real risk: too-low LR converges more slowly and may not fully
+# exploit the fixed 150-epoch budget -- this is a genuine test, not a
+# guaranteed win.
 
 model:
   name: vit
@@ -63,7 +73,7 @@ training:
   random_seed: 705643
   epochs: 150
   optimizer: adamw
-  learning_rate: 0.0005
+  learning_rate: 0.00025
   weight_decay: 0.08
   lr_schedule: cosine
   warmup_epochs: 5
