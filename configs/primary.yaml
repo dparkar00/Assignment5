@@ -118,8 +118,49 @@
 # (dropout/drop_path_rate are explicitly NOT required to match ViT's, per
 # the note in configs/vit_baseline.yaml) -- only Swin needs retraining,
 # not both models, unlike every prior shared-setting change.
+# RESULT: best result yet, and the diagnosed mechanism was directly
+# confirmed, not just correlated -- the late-stage val_loss/train_loss gap
+# that motivated this change shrank from +0.22 (epoch 150, v11) to +0.09
+# (epoch 150, v12), more than half. Val 71.00% (best yet), test 69.73%
+# (best yet) -- 0.27 points from the 70% target.
+#
+# CONSIDERED BUT REJECTED (would-be v13): drop_path_rate 0.3 -> 0.35.
+# Before applying, checked v12's actual epoch-by-epoch curve against v11's:
+# v12 (drop_path=0.3) was BEHIND v11 (drop_path=0.2) for the first ~85
+# epochs (by up to 1.8 val points), only overtaking in the final ~15% of
+# training -- a real, quantified early-training cost, not just a
+# hypothetical one. Given the fixed, shared 150-epoch budget (cannot be
+# extended for Swin alone), pushing drop_path further risked repeating
+# v9's failure mode (a well-reasoned change that undershot because the
+# model didn't have enough budget left to exploit it). Reverted to 0.3 to
+# avoid compounding this identified risk; drop_path_rate is not the v13
+# change.
+#
+# CONSIDERED, THEN SWAPPED OUT (would-be v13): warmup_epochs 10 -> 15.
+# Reasoning stands as the best-supported remaining shared-setting option
+# (see conversation history) -- deferred, not rejected, in favor of testing
+# an unexamined architecture-specific lever first: dropout=0.05 had not
+# been reconsidered since v3, on a completely different 10-block,
+# patch_size=4 model, before every subsequent successful change (patch
+# size, depths, LR, weight_decay, drop_path). Testing this first keeps one
+# variable moving at a time; warmup remains available as the next shared-
+# setting attempt if this doesn't pan out.
+#
+# ARCHITECTURE-ONLY CHANGE (v13): dropout 0.05 -> 0.1. A third, distinct
+# regularization mechanism from what's already been tried: drop_path (v12,
+# worked) randomly drops entire residual blocks; weight_decay (v10,
+# failed) penalizes weight magnitude; dropout zeros individual activations
+# within each block's attention/MLP output. Modest increase (doubling,
+# not an extreme jump) given weight_decay's lesson that overshooting a
+# regularization lever can hurt net accuracy even when the underlying
+# hypothesis (targeting the diagnosed late-stage overfitting) is sound.
+# Confirmed parameter-neutral (13,284,499 either way). Architecture-
+# specific (not required to match ViT's dropout) -- only Swin needs
+# retraining. warmup_epochs reverted to 10 (v11's confirmed-good value) in
+# both configs, since v13 is dropout, not warmup, this round.
 #
 # Only architecture-specific settings (model: section) differ from
+
 
 # configs/vit_baseline.yaml -- everything in data:/training: below is
 # byte-identical, unchanged except the shared LR change above, per
@@ -136,7 +177,7 @@ model:
   depths: [7, 5, 5]
   num_heads: [3, 6, 12]
   mlp_ratio: 4.5
-  dropout: 0.05
+  dropout: 0.1
   drop_path_rate: 0.3
   num_classes: 100
 

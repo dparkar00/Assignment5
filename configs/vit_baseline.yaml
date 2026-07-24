@@ -68,6 +68,15 @@
 # SHARED-SETTING CHANGE (v11): weight_decay 0.12 -> 0.08 (revert,
 # validation-justified) and warmup_epochs 5 -> 10 (untested lever --
 # see configs/primary.yaml for the full reasoning).
+# RESULT: best result yet at the time (Swin val 70.54%, test 69.20%).
+#
+# v12 was Swin-architecture-only (drop_path_rate), not applicable here --
+# see configs/primary.yaml.
+#
+# CONSIDERED, THEN SWAPPED OUT (would-be v13): warmup_epochs 10 -> 15.
+# Deferred in favor of testing dropout first (Swin-architecture-only, not
+# applicable to this baseline config) -- see configs/primary.yaml for the
+# full reasoning. warmup_epochs remains at 10, unchanged this round.
 
 model:
   name: vit
