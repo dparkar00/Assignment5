@@ -21,6 +21,27 @@ import matplotlib.pyplot as plt  # noqa: E402  pylint: disable=wrong-import-posi
 import numpy as np  # noqa: E402  pylint: disable=wrong-import-position
 
 
+def _display_figure(fig) -> None:
+    """Display a figure inline in a notebook (Colab/Jupyter).
+
+    plt.show() silently does nothing under the 'Agg' backend forced above
+    (Agg has no display capability at all -- it's rasterize-to-file-only),
+    which is why a naive show=True previously produced no image, just the
+    function's returned file path auto-printed by the notebook. IPython's
+    display() renders the figure object directly through the notebook's
+    rich-display protocol, bypassing the backend's own show() mechanism
+    entirely, so it works correctly regardless of which backend is active.
+    Falls back to a no-op outside a notebook (e.g. a plain script/CI run),
+    where there's no rich display to render into anyway.
+    """
+    try:
+        from IPython.display import display  # pylint: disable=import-outside-toplevel
+
+        display(fig)
+    except ImportError:
+        pass
+
+
 def _read_training_log(csv_path: str) -> dict:
     """Read a training CSV log (as written by src/train.py) into a dict of
     parallel lists, one entry per column.
@@ -69,7 +90,7 @@ def plot_training_curves(log_paths: dict, output_path: str, show: bool = False) 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     if show:
-        plt.show()
+        _display_figure(fig)
     plt.close(fig)
     return output_path
 
@@ -102,7 +123,7 @@ def plot_confusion_matrices(matrices: dict, output_path: str, show: bool = False
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     if show:
-        plt.show()
+        _display_figure(fig)
     plt.close(fig)
     return output_path
 
@@ -137,6 +158,6 @@ def plot_misclassified_examples(
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
     if show:
-        plt.show()
+        _display_figure(fig)
     plt.close(fig)
     return output_path
