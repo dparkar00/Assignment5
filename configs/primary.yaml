@@ -177,7 +177,7 @@ model:
   depths: [7, 5, 5]
   num_heads: [3, 6, 12]
   mlp_ratio: 4.5
-  dropout: 0.1
+  dropout: 0.05
   drop_path_rate: 0.3
   num_classes: 100
 
@@ -205,7 +205,7 @@ training:
   learning_rate: 0.0005
   weight_decay: 0.08
   lr_schedule: cosine
-  warmup_epochs: 10
+  warmup_epochs: 15
   label_smoothing: 0.1
   grad_clip_norm: 1.0
   mixed_precision: true
