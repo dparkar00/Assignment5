@@ -36,13 +36,15 @@ def _read_training_log(csv_path: str) -> dict:
     return columns
 
 
-def plot_training_curves(log_paths: dict, output_path: str) -> str:
+def plot_training_curves(log_paths: dict, output_path: str, show: bool = False) -> str:
     """Plot train/val loss, train/val accuracy, and LR schedule for one or
     more models on shared axes, so the curves are directly comparable.
 
     log_paths: {model_display_name: csv_log_path}, e.g.
         {"Swin (primary)": "logs/primary_training.csv",
          "ViT (baseline)": "logs/vit_training.csv"}
+    show: if True, display inline (e.g. in a Colab/Jupyter cell) in
+        addition to saving.
     """
     logs = {name: _read_training_log(path) for name, path in log_paths.items()}
 
@@ -66,14 +68,18 @@ def plot_training_curves(log_paths: dict, output_path: str) -> str:
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
+    if show:
+        plt.show()
     plt.close(fig)
     return output_path
 
 
-def plot_confusion_matrices(matrices: dict, output_path: str) -> str:
+def plot_confusion_matrices(matrices: dict, output_path: str, show: bool = False) -> str:
     """Plot one confusion-matrix heatmap per model, side by side.
 
     matrices: {model_display_name: confusion_matrix (2D list or ndarray)}
+    show: if True, display inline (e.g. in a Colab/Jupyter cell) in
+        addition to saving -- the figure isn't closed until after showing.
 
     With 100 CIFAR-100 classes, per-cell tick labels aren't legible -- this
     plots the full matrix as a log-scaled heatmap (standard practice for
@@ -95,11 +101,15 @@ def plot_confusion_matrices(matrices: dict, output_path: str) -> str:
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
+    if show:
+        plt.show()
     plt.close(fig)
     return output_path
 
 
-def plot_misclassified_examples(examples: list, output_path: str, columns: int = 4) -> str:
+def plot_misclassified_examples(
+    examples: list, output_path: str, columns: int = 4, show: bool = False
+) -> str:
     """Plot a grid of misclassified test images with true/predicted labels
     and predicted probability, per the Part 5 "at least 12 misclassified
     test images" requirement.
@@ -126,5 +136,7 @@ def plot_misclassified_examples(examples: list, output_path: str, columns: int =
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
+    if show:
+        plt.show()
     plt.close(fig)
     return output_path

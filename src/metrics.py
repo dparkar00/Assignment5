@@ -14,6 +14,7 @@ implementation is the right call here, not a from-scratch one.
 
 from __future__ import annotations
 
+import csv
 import dataclasses
 
 import numpy as np
@@ -156,3 +157,23 @@ def top_and_bottom_classes(metrics: ClassificationMetrics, n: int = 5) -> dict:
         "highest_f1": f1_by_class[:n],
         "lowest_f1": f1_by_class[-n:][::-1],
     }
+
+
+def save_per_class_csv(metrics: ClassificationMetrics, output_path: str) -> str:
+    """Write the full per-class precision/recall/F1/support breakdown to a
+    CSV, sorted by F1 descending -- readable directly (Excel, pandas, or a
+    text editor) rather than requiring the caller to parse the full JSON.
+    """
+    rows = sorted(
+        zip(
+            metrics.class_names, metrics.per_class_precision,
+            metrics.per_class_recall, metrics.per_class_f1, metrics.per_class_support,
+        ),
+        key=lambda row: row[3],
+        reverse=True,
+    )
+    with open(output_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(["class_name", "precision", "recall", "f1_score", "support"])
+        writer.writerows(rows)
+    return output_path

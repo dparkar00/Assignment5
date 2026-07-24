@@ -158,6 +158,30 @@ class TestFindConfusionPatterns:
         assert len(patterns) == 1
 
 
+class TestSavePerClassCsv:
+    def test_writes_readable_csv_sorted_by_f1(self, tmp_path):
+        from src.metrics import save_per_class_csv
+
+        num_classes = 3
+        y_true = np.array([0, 0, 1, 1, 2, 2])
+        y_pred = np.array([0, 0, 1, 0, 2, 2])  # class 0 perfect, class 2 perfect, class 1 worse
+        y_proba = np.eye(num_classes)[y_pred]
+        class_names = ["cat", "dog", "bird"]
+
+        metrics = compute_classification_metrics(y_true, y_pred, y_proba, num_classes, class_names=class_names)
+        output_path = save_per_class_csv(metrics, str(tmp_path / "per_class.csv"))
+
+        import csv as csv_module
+
+        with open(output_path, newline="", encoding="utf-8") as f:
+            rows = list(csv_module.DictReader(f))
+
+        assert len(rows) == num_classes
+        assert set(rows[0].keys()) == {"class_name", "precision", "recall", "f1_score", "support"}
+        f1_values = [float(row["f1_score"]) for row in rows]
+        assert f1_values == sorted(f1_values, reverse=True)
+
+
 class TestTopAndBottomClasses:
     def test_identifies_highest_and_lowest_f1(self):
         num_classes = 5
