@@ -35,11 +35,12 @@ from src.data import build_data_config, build_dataloaders, build_datasets
 from src.metrics import (
     ClassificationMetrics,
     compute_classification_metrics,
+    save_per_class_csv,
     top_and_bottom_classes,
 )
 from src.train import build_model
 from src.utils import get_device, load_yaml_config
-from src.visualize import plot_misclassified_examples
+from src.visualize import plot_confusion_matrices, plot_misclassified_examples
 
 
 def load_model_from_checkpoint(
@@ -201,7 +202,7 @@ def _save_metrics_json(metrics: ClassificationMetrics, model_name: str, output_d
 
 
 def _save_error_examples_figure(
-    results: InferenceResults, model_name: str, output_dir: str, n: int = 12
+    results: InferenceResults, model_name: str, output_dir: str, n: int = 12, show: bool = False
 ) -> Path | None:
     """Select and plot misclassified test images, per the Part 5
     "at least 12 misclassified test images" requirement. Returns None if
@@ -226,8 +227,79 @@ def _save_error_examples_figure(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     figure_path = output_path / f"{model_name}_error_examples.png"
-    plot_misclassified_examples(examples, str(figure_path))
+    plot_misclassified_examples(examples, str(figure_path), show=show)
     return figure_path
+
+
+def _save_confusion_matrix_figure(
+    metrics: ClassificationMetrics, model_name: str, figures_dir: str, show: bool = False
+) -> Path:
+    """Plot and save this model's confusion matrix, per Part 5's required
+    figures. Saved standalone (one model), unlike the combined two-model
+    figure a report would eventually want -- see src/visualize.py to build
+    that separately once both models have been evaluated.
+    """
+    output_path = Path(figures_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    figure_path = output_path / f"{model_name}_confusion_matrix.png"
+    plot_confusion_matrices({model_name: metrics.confusion_matrix}, str(figure_path), show=show)
+    return figure_path
+
+
+def _save_and_display_per_class_table(
+    metrics: ClassificationMetrics, model_name: str, output_dir: str, show: bool = False
+) -> Path:
+    """Save the per-class breakdown as CSV (still useful for the report's
+    appendix/raw data), and additionally *display* it as a readable table
+    inline when show=True -- so a notebook caller doesn't have to reload
+    the CSV themselves just to see it.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    csv_path = output_path / f"{model_name}_per_class.csv"
+    save_per_class_csv(metrics, str(csv_path))
+
+    if show:
+        try:
+            import pandas as pd  # pylint: disable=import-outside-toplevel
+            from IPython.display import display  # pylint: disable=import-outside-toplevel
+
+            display(pd.read_csv(csv_path))
+        except ImportError:
+            # Outside a notebook / pandas unavailable -- print a plain table instead.
+            print(f"\n{model_name} per-class breakdown:")
+            with open(csv_path, "r", encoding="utf-8") as csv_file:
+                print(csv_file.read())
+
+    return csv_path
+
+
+def _save_and_report_all_outputs(
+    metrics: ClassificationMetrics,
+    results: InferenceResults,
+    model_name: str,
+    output_dir: str,
+    figures_dir: str,
+    show: bool,
+) -> None:
+    """Save (and optionally display) every Part 5 deliverable this
+    evaluation produces: the full metrics JSON, the per-class CSV/table,
+    the confusion matrix figure, and the error-examples figure. Bundled
+    into one call so evaluate() itself doesn't need a separate local
+    variable and print statement per output.
+    """
+    result_file = _save_metrics_json(metrics, model_name, output_dir)
+    print(f"\nFull metrics saved to {result_file}")
+
+    csv_path = _save_and_display_per_class_table(metrics, model_name, output_dir, show=show)
+    print(f"Per-class breakdown saved to {csv_path}")
+
+    cm_path = _save_confusion_matrix_figure(metrics, model_name, figures_dir, show=show)
+    print(f"Confusion matrix figure saved to {cm_path}")
+
+    figure_path = _save_error_examples_figure(results, model_name, figures_dir, show=show)
+    if figure_path is not None:
+        print(f"Error-examples figure saved to {figure_path}")
 
 
 def evaluate(
@@ -236,10 +308,17 @@ def evaluate(
     data_root: str | None = None,
     output_dir: str = "./eval_results",
     figures_dir: str = "./figures",
+    show: bool = False,
 ) -> ClassificationMetrics:
     """Full evaluation entry point: load checkpoint, run test inference
-    once, compute all required metrics, save metrics + error-examples
-    figure, print a summary.
+    once, compute all required metrics, save + display the per-class
+    table, confusion matrix, and error-examples figure, print a summary.
+
+    show: if True, displays the per-class table and figures inline (e.g.
+        in a Colab/Jupyter cell), in addition to always saving them to
+        disk. Call this function directly from a notebook cell (not via
+        `!python -m src.evaluate`, which runs as a subprocess and can't
+        render inline) to get inline display.
     """
     device = get_device()
     model, config, checkpoint = load_model_from_checkpoint(config_path, checkpoint_path, device)
@@ -255,16 +334,7 @@ def evaluate(
         num_classes=config["model"]["num_classes"], class_names=results.class_names,
     )
     print_summary(model_name, checkpoint, metrics)
-
-    result_file = _save_metrics_json(metrics, model_name, output_dir)
-    print(
-        f"\nFull metrics (including per-class breakdown and confusion matrix) "
-        f"saved to {result_file}"
-    )
-
-    figure_path = _save_error_examples_figure(results, model_name, figures_dir)
-    if figure_path is not None:
-        print(f"Error-examples figure saved to {figure_path}")
+    _save_and_report_all_outputs(metrics, results, model_name, output_dir, figures_dir, show)
 
     return metrics
 
@@ -293,10 +363,20 @@ def main() -> None:
         "--figures-dir", type=str, default="./figures",
         help="Directory to save the error-examples figure to.",
     )
+    parser.add_argument(
+        "--show", action="store_true",
+        help=(
+            "Display the per-class table and figures inline in addition to saving them. "
+            "Only takes effect when evaluate() is called directly from a notebook cell -- "
+            "running this CLI via `!python -m src.evaluate` executes as a subprocess and "
+            "cannot render inline, so this flag has no visible effect there."
+        ),
+    )
     args = parser.parse_args()
     evaluate(
         args.config, args.checkpoint,
         data_root=args.data_root, output_dir=args.output_dir, figures_dir=args.figures_dir,
+        show=args.show,
     )
 
 
