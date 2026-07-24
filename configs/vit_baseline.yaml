@@ -108,7 +108,7 @@ training:
   batch_size: 256
   num_workers: 2
   random_seed: 705643
-  epochs: 150
+  epochs: 200
   optimizer: adamw
   learning_rate: 0.0005
   weight_decay: 0.08
